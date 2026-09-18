@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.savings.schemas import SavingsItemCreate, SavingsItemRead, SavingsRead
+from app.savings.schemas import SavingsItemCreate, SavingsItemRead, SavingsItemUpdate, SavingsRead
 from app.savings.service import SavingsItemService, SavingsService
 from app.users.models import User
 
@@ -57,6 +57,17 @@ def get_savings_item(
     db: Session = Depends(get_db),
 ) -> SavingsItemRead:
     item = SavingsItemService(db).get(current_user, item_id)
+    return SavingsItemRead.model_validate(item)
+
+
+@router.patch("/savings-items/{item_id}", response_model=SavingsItemRead)
+def update_savings_item(
+    item_id: uuid.UUID,
+    payload: SavingsItemUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SavingsItemRead:
+    item = SavingsItemService(db).update(current_user, item_id, payload)
     return SavingsItemRead.model_validate(item)
 
 

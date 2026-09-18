@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.common.repository_utils import count_query
+from app.common.repository_utils import conditional_update, count_query
 from app.income.models import Income
 
 
@@ -47,6 +47,22 @@ class IncomeRepository:
         stmt = stmt.order_by(Income.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         rows = list(self.db.execute(stmt).scalars().all())
         return rows, total
+
+    def update_owned(
+        self,
+        user_id: uuid.UUID,
+        income_id: uuid.UUID,
+        expected_updated_at: datetime,
+        values: dict,
+    ) -> int:
+        return conditional_update(
+            self.db,
+            Income,
+            record_id=income_id,
+            user_id=user_id,
+            expected_updated_at=expected_updated_at,
+            values=values,
+        )
 
     def soft_delete(self, income: Income) -> None:
         income.deleted_at = datetime.now(timezone.utc)

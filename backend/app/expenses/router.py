@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.expenses.schemas import ExpenseCreate, ExpenseRead
+from app.expenses.schemas import ExpenseCreate, ExpenseRead, ExpenseUpdate
 from app.expenses.service import ExpenseService
 from app.users.models import User
 
@@ -60,6 +60,17 @@ def get_expense(
     db: Session = Depends(get_db),
 ) -> ExpenseRead:
     expense = ExpenseService(db).get(current_user, expense_id)
+    return ExpenseRead.model_validate(expense)
+
+
+@router.patch("/{expense_id}", response_model=ExpenseRead)
+def update_expense(
+    expense_id: uuid.UUID,
+    payload: ExpenseUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ExpenseRead:
+    expense = ExpenseService(db).update(current_user, expense_id, payload)
     return ExpenseRead.model_validate(expense)
 
 

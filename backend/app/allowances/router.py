@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.allowances.schemas import AllowanceCreate, AllowanceRead
+from app.allowances.schemas import AllowanceCreate, AllowanceRead, AllowanceUpdate
 from app.allowances.service import AllowanceService
 from app.common.database import get_db
 from app.common.deps import get_current_user
@@ -48,6 +48,17 @@ def get_allowance(
     db: Session = Depends(get_db),
 ) -> AllowanceRead:
     allowance = AllowanceService(db).get(current_user, allowance_id)
+    return AllowanceRead.model_validate(allowance)
+
+
+@router.patch("/{allowance_id}", response_model=AllowanceRead)
+def update_allowance(
+    allowance_id: uuid.UUID,
+    payload: AllowanceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AllowanceRead:
+    allowance = AllowanceService(db).update(current_user, allowance_id, payload)
     return AllowanceRead.model_validate(allowance)
 
 

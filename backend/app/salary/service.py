@@ -3,11 +3,11 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
-from app.common.errors import ConflictError, NotFoundError
+from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.financial_periods.repository import FinancialPeriodRepository
 from app.salary.models import Salary
 from app.salary.repository import SalaryRepository
-from app.salary.schemas import SalaryCreate
+from app.salary.schemas import SalaryCreate, SalaryUpdate
 from app.users.models import User
 
 
@@ -53,6 +53,48 @@ class SalaryService:
         )
         self.db.commit()
         return salary
+
+    def update(self, user: User, salary_id: uuid.UUID, payload: SalaryUpdate) -> Salary:
+        salary = self.get(user, salary_id)
+        self._ensure_period_open(user, salary.financial_period_id)
+
+        values = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
+        if not values:
+            raise ValidationAppError("No fields provided to update.")
+        if values.get("currency"):
+            values["currency"] = values["currency"].upper()
+
+        before = {
+            "net_amount": str(salary.net_amount),
+            "currency": salary.currency,
+            "status": salary.status,
+            "notes": salary.notes,
+        }
+
+        rowcount = self.repo.update_owned(user.id, salary_id, payload.expected_updated_at, values)
+        if rowcount == 0:
+            raise ConflictError(
+                "This salary record was modified by another request. Reload and try again."
+            )
+
+        updated = self.get(user, salary_id)
+        self.audit.record(
+            user_id=user.id,
+            entity_type="Salary",
+            entity_id=updated.id,
+            action="UPDATE",
+            before_state=before,
+            after_state={
+                "net_amount": str(updated.net_amount),
+                "currency": updated.currency,
+                "status": updated.status,
+                "notes": updated.notes,
+            },
+            related_record_type="FinancialPeriod",
+            related_record_id=updated.financial_period_id,
+        )
+        self.db.commit()
+        return updated
 
     def get(self, user: User, salary_id: uuid.UUID) -> Salary:
         salary = self.repo.get_owned(user.id, salary_id)

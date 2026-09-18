@@ -5,11 +5,11 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
-from app.common.errors import ConflictError, NotFoundError
+from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.financial_periods.repository import FinancialPeriodRepository
 from app.savings.models import Savings, SavingsItem
 from app.savings.repository import SavingsItemRepository, SavingsRepository
-from app.savings.schemas import SavingsItemCreate
+from app.savings.schemas import SavingsItemCreate, SavingsItemUpdate
 from app.users.models import User
 
 
@@ -96,6 +96,54 @@ class SavingsItemService:
         # next time financial_periods.get_summary/close is called (D-012); a live trigger here
         # is Phase 3 wiring once the full distribution engine exists.
         return item
+
+    def update(self, user: User, item_id: uuid.UUID, payload: SavingsItemUpdate) -> SavingsItem:
+        item = self.get(user, item_id)
+        self._ensure_period_open(user, item.financial_period_id)
+
+        values = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
+        if not values:
+            raise ValidationAppError("No fields provided to update.")
+        if values.get("currency"):
+            values["currency"] = values["currency"].upper()
+
+        before = {
+            "name": item.name,
+            "amount": str(item.amount),
+            "currency": item.currency,
+            "date": str(item.date),
+            "destination": item.destination,
+            "notes": item.notes,
+        }
+
+        rowcount = self.repo.update_owned(user.id, item_id, payload.expected_updated_at, values)
+        if rowcount == 0:
+            raise ConflictError(
+                "This savings item was modified by another request. Reload and try again."
+            )
+
+        updated = self.get(user, item_id)
+        self.audit.record(
+            user_id=user.id,
+            entity_type="SavingsItem",
+            entity_id=updated.id,
+            action="UPDATE",
+            before_state=before,
+            after_state={
+                "name": updated.name,
+                "amount": str(updated.amount),
+                "currency": updated.currency,
+                "date": str(updated.date),
+                "destination": updated.destination,
+                "notes": updated.notes,
+            },
+            related_record_type="FinancialPeriod",
+            related_record_id=updated.financial_period_id,
+        )
+        self.db.commit()
+        # NOTE: same as create() — the Savings cache recalculation happens the next time
+        # financial_periods.get_summary/close runs (D-012), not synchronously here.
+        return updated
 
     def get(self, user: User, item_id: uuid.UUID) -> SavingsItem:
         item = self.repo.get_owned(user.id, item_id)

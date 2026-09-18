@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.distribution.schemas import DistributionRuleCreate, DistributionRuleRead
+from app.distribution.schemas import (
+    DistributionCategoriesReplace,
+    DistributionRuleCreate,
+    DistributionRuleRead,
+    DistributionRuleUpdate,
+)
 from app.distribution.service import DistributionService
 from app.users.models import User
 
@@ -48,3 +53,34 @@ def get_distribution_rule(
 ) -> DistributionRuleRead:
     rule = DistributionService(db).get_rule(current_user, rule_id)
     return DistributionRuleRead.model_validate(rule)
+
+
+@router.patch("/{rule_id}", response_model=DistributionRuleRead)
+def update_distribution_rule(
+    rule_id: uuid.UUID,
+    payload: DistributionRuleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DistributionRuleRead:
+    rule = DistributionService(db).update_rule(current_user, rule_id, payload)
+    return DistributionRuleRead.model_validate(rule)
+
+
+@router.put("/{rule_id}/categories", response_model=DistributionRuleRead)
+def replace_distribution_rule_categories(
+    rule_id: uuid.UUID,
+    payload: DistributionCategoriesReplace,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DistributionRuleRead:
+    rule = DistributionService(db).replace_categories(current_user, rule_id, payload)
+    return DistributionRuleRead.model_validate(rule)
+
+
+@router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_distribution_rule(
+    rule_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    DistributionService(db).deactivate_rule(current_user, rule_id)

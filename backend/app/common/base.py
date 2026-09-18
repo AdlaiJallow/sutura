@@ -26,7 +26,20 @@ class UUIDPKMixin:
 
 
 class TimestampMixin:
-    """created_at/updated_at for tables that are mutated in place (not append-only)."""
+    """created_at/updated_at for tables that are mutated in place (not append-only).
+
+    `updated_at`'s `onupdate` deliberately uses `clock_timestamp()`, not `now()`: Postgres's
+    `now()`/`CURRENT_TIMESTAMP` is fixed to the *transaction's* start time (constant across every
+    statement in that transaction), while `clock_timestamp()` returns the true wall-clock instant
+    of each individual statement. D-018's optimistic-locking convention depends on `updated_at`
+    actually advancing on every write the row participates in — with `now()`, two writes to the
+    same row inside one transaction (e.g. create-then-update, which is exactly what happens
+    inside this test suite's savepoint-per-test harness, and could happen in a single request
+    handler) would otherwise produce an identical, indistinguishable `updated_at`, silently
+    defeating the whole mechanism. This has no DDL/migration impact: `onupdate` is a
+    SQLAlchemy-side directive for what expression to embed in future UPDATE statements, not a
+    stored column default.
+    """
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -34,7 +47,7 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        onupdate=func.clock_timestamp(),
         nullable=False,
     )
 

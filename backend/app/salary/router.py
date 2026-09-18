@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.salary.schemas import SalaryCreate, SalaryRead
+from app.salary.schemas import SalaryCreate, SalaryRead, SalaryUpdate
 from app.salary.service import SalaryService
 from app.users.models import User
 
@@ -46,6 +46,17 @@ def get_salary(
     db: Session = Depends(get_db),
 ) -> SalaryRead:
     salary = SalaryService(db).get(current_user, salary_id)
+    return SalaryRead.model_validate(salary)
+
+
+@router.patch("/{salary_id}", response_model=SalaryRead)
+def update_salary(
+    salary_id: uuid.UUID,
+    payload: SalaryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SalaryRead:
+    salary = SalaryService(db).update(current_user, salary_id, payload)
     return SalaryRead.model_validate(salary)
 
 

@@ -4,11 +4,11 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
-from app.common.errors import ConflictError, NotFoundError
+from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.financial_periods.repository import FinancialPeriodRepository
 from app.income.models import Income
 from app.income.repository import IncomeRepository
-from app.income.schemas import IncomeCreate
+from app.income.schemas import IncomeCreate, IncomeUpdate
 from app.users.models import User
 
 
@@ -53,6 +53,52 @@ class IncomeService:
         )
         self.db.commit()
         return income
+
+    def update(self, user: User, income_id: uuid.UUID, payload: IncomeUpdate) -> Income:
+        income = self.get(user, income_id)
+        self._ensure_period_open(user, income.financial_period_id)
+
+        values = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
+        if not values:
+            raise ValidationAppError("No fields provided to update.")
+        if values.get("currency"):
+            values["currency"] = values["currency"].upper()
+
+        before = {
+            "income_type": income.income_type,
+            "description": income.description,
+            "amount": str(income.amount),
+            "currency": income.currency,
+            "source": income.source,
+            "notes": income.notes,
+        }
+
+        rowcount = self.repo.update_owned(user.id, income_id, payload.expected_updated_at, values)
+        if rowcount == 0:
+            raise ConflictError(
+                "This income record was modified by another request. Reload and try again."
+            )
+
+        updated = self.get(user, income_id)
+        self.audit.record(
+            user_id=user.id,
+            entity_type="Income",
+            entity_id=updated.id,
+            action="UPDATE",
+            before_state=before,
+            after_state={
+                "income_type": updated.income_type,
+                "description": updated.description,
+                "amount": str(updated.amount),
+                "currency": updated.currency,
+                "source": updated.source,
+                "notes": updated.notes,
+            },
+            related_record_type="FinancialPeriod",
+            related_record_id=updated.financial_period_id,
+        )
+        self.db.commit()
+        return updated
 
     def get(self, user: User, income_id: uuid.UUID) -> Income:
         income = self.repo.get_owned(user.id, income_id)

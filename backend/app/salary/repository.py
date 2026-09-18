@@ -1,9 +1,10 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.common.repository_utils import count_query
+from app.common.repository_utils import conditional_update, count_query
 from app.salary.models import Salary
 
 
@@ -40,6 +41,22 @@ class SalaryRepository:
         stmt = stmt.order_by(Salary.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         rows = list(self.db.execute(stmt).scalars().all())
         return rows, total
+
+    def update_owned(
+        self,
+        user_id: uuid.UUID,
+        salary_id: uuid.UUID,
+        expected_updated_at: datetime,
+        values: dict,
+    ) -> int:
+        return conditional_update(
+            self.db,
+            Salary,
+            record_id=salary_id,
+            user_id=user_id,
+            expected_updated_at=expected_updated_at,
+            values=values,
+        )
 
     def soft_delete(self, salary: Salary) -> None:
         from datetime import datetime, timezone

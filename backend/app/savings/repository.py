@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.common.repository_utils import count_query
+from app.common.repository_utils import conditional_update, count_query
 from app.savings.models import Savings, SavingsItem
 
 
@@ -51,6 +51,22 @@ class SavingsItemRepository:
         stmt = stmt.order_by(SavingsItem.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
         rows = list(self.db.execute(stmt).scalars().all())
         return rows, total
+
+    def update_owned(
+        self,
+        user_id: uuid.UUID,
+        item_id: uuid.UUID,
+        expected_updated_at: datetime,
+        values: dict,
+    ) -> int:
+        return conditional_update(
+            self.db,
+            SavingsItem,
+            record_id=item_id,
+            user_id=user_id,
+            expected_updated_at=expected_updated_at,
+            values=values,
+        )
 
     def soft_delete(self, item: SavingsItem) -> None:
         item.deleted_at = datetime.now(timezone.utc)

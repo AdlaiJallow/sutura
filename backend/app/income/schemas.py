@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -29,6 +29,30 @@ class IncomeCreate(BaseModel):
         return value
 
 
+class IncomeUpdate(BaseModel):
+    """Partial update; `expected_updated_at` is the D-018 optimistic-locking token."""
+
+    income_type: str | None = None
+    description: str | None = Field(default=None, max_length=255)
+    amount: Decimal | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    date_received: date | None = None
+    source: str | None = Field(default=None, max_length=150)
+    is_recurring: bool | None = None
+    notes: str | None = None
+    expected_updated_at: datetime
+
+    @field_validator("income_type")
+    @classmethod
+    def valid_income_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in INCOME_TYPES:
+            raise ValueError(
+                f"income_type must be one of {sorted(INCOME_TYPES)} "
+                "(salary/allowances are recorded via their own endpoints, D-007)."
+            )
+        return value
+
+
 class IncomeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -42,3 +66,4 @@ class IncomeRead(BaseModel):
     source: str | None
     is_recurring: bool
     notes: str | None
+    updated_at: datetime

@@ -4,9 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.allowances.models import Allowance
 from app.allowances.repository import AllowanceRepository
-from app.allowances.schemas import AllowanceCreate
+from app.allowances.schemas import AllowanceCreate, AllowanceUpdate
 from app.audit.service import AuditService
-from app.common.errors import ConflictError, NotFoundError
+from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.financial_periods.repository import FinancialPeriodRepository
 from app.users.models import User
 
@@ -50,6 +50,54 @@ class AllowanceService:
         )
         self.db.commit()
         return allowance
+
+    def update(self, user: User, allowance_id: uuid.UUID, payload: AllowanceUpdate) -> Allowance:
+        allowance = self.get(user, allowance_id)
+        self._ensure_period_open(user, allowance.financial_period_id)
+
+        values = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
+        if not values:
+            raise ValidationAppError("No fields provided to update.")
+        if values.get("currency"):
+            values["currency"] = values["currency"].upper()
+
+        before = {
+            "name": allowance.name,
+            "amount": str(allowance.amount),
+            "currency": allowance.currency,
+            "is_recurring": allowance.is_recurring,
+            "date_received": str(allowance.date_received),
+            "notes": allowance.notes,
+        }
+
+        rowcount = self.repo.update_owned(
+            user.id, allowance_id, payload.expected_updated_at, values
+        )
+        if rowcount == 0:
+            raise ConflictError(
+                "This allowance was modified by another request. Reload and try again."
+            )
+
+        updated = self.get(user, allowance_id)
+        self.audit.record(
+            user_id=user.id,
+            entity_type="Allowance",
+            entity_id=updated.id,
+            action="UPDATE",
+            before_state=before,
+            after_state={
+                "name": updated.name,
+                "amount": str(updated.amount),
+                "currency": updated.currency,
+                "is_recurring": updated.is_recurring,
+                "date_received": str(updated.date_received),
+                "notes": updated.notes,
+            },
+            related_record_type="FinancialPeriod",
+            related_record_id=updated.financial_period_id,
+        )
+        self.db.commit()
+        return updated
 
     def get(self, user: User, allowance_id: uuid.UUID) -> Allowance:
         allowance = self.repo.get_owned(user.id, allowance_id)

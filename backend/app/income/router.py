@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.income.schemas import IncomeCreate, IncomeRead
+from app.income.schemas import IncomeCreate, IncomeRead, IncomeUpdate
 from app.income.service import IncomeService
 from app.users.models import User
 
@@ -56,6 +56,17 @@ def get_income(
     db: Session = Depends(get_db),
 ) -> IncomeRead:
     income = IncomeService(db).get(current_user, income_id)
+    return IncomeRead.model_validate(income)
+
+
+@router.patch("/{income_id}", response_model=IncomeRead)
+def update_income(
+    income_id: uuid.UUID,
+    payload: IncomeUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> IncomeRead:
+    income = IncomeService(db).update(current_user, income_id, payload)
     return IncomeRead.model_validate(income)
 
 
