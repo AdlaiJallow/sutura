@@ -428,7 +428,10 @@ class SavingsAllocationService:
 
         account = None
         if payload.bank_account_id is not None:
-            account = self.accounts.get_owned(user.id, payload.bank_account_id)
+            # Locked (not `get_owned`) from the start (D-025/F-1): this row's `current_balance`
+            # is read-modified below when the linked BankTransaction is posted, and the lock
+            # must be held for the whole check-insert-update sequence.
+            account = self.accounts.lock_owned(user.id, payload.bank_account_id)
             if account is None:
                 raise NotFoundError("Bank account not found.")
             if not account.is_active:
@@ -477,6 +480,20 @@ class SavingsAllocationService:
             allocation.bank_transaction_id = txn.id
             self.repo.save(allocation)
 
+            # F-4: the BankTransaction this allocation posts is itself a ledger event and gets
+            # its own audit entry, same convention BankTransactionService.create already uses
+            # (`related_record_type="BankAccount"`) — auditing only the SavingsAllocation would
+            # leave the balance-affecting ledger write unaudited.
+            self.audit.record(
+                user_id=user.id,
+                entity_type="BankTransaction",
+                entity_id=txn.id,
+                action="CREATE",
+                after_state={"amount": str(txn.amount), "transaction_type": txn.transaction_type},
+                related_record_type="BankAccount",
+                related_record_id=account.id,
+            )
+
         self.audit.record(
             user_id=user.id,
             entity_type="SavingsAllocation",
@@ -487,6 +504,9 @@ class SavingsAllocationService:
                 "allocation_method": "MANUAL",
                 "bank_account_id": str(account.id) if account else None,
                 "destination_label": allocation.destination_label,
+                "bank_transaction_id": str(allocation.bank_transaction_id)
+                if allocation.bank_transaction_id
+                else None,
             },
             related_record_type="FinancialPeriod",
             related_record_id=payload.financial_period_id,
@@ -524,6 +544,10 @@ class SavingsAllocationService:
         rule = self.rules_repo.get_rule(user.id, savings_distribution_rule_id)
         if rule is None:
             raise NotFoundError("Savings distribution rule not found.")
+        if not rule.is_active:
+            raise ValidationAppError(
+                "This savings distribution rule is not active and cannot be applied."
+            )
         if not rule.items:
             raise ValidationAppError("This savings distribution rule has no items.")
 

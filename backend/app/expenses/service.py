@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
+from app.banks.repository import BankAccountRepository
 from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.distribution.models import DistributionCategory
 from app.expenses.models import Expense
@@ -20,6 +21,7 @@ class ExpenseService:
         self.db = db
         self.repo = ExpenseRepository(db)
         self.periods = FinancialPeriodRepository(db)
+        self.accounts = BankAccountRepository(db)
         self.audit = AuditService(db)
 
     def _ensure_period_open(self, user: User, financial_period_id: uuid.UUID):
@@ -56,9 +58,21 @@ class ExpenseService:
                 "distribution rule."
             )
 
+    def _validate_bank_account(self, user: User, bank_account_id: uuid.UUID | None) -> None:
+        """F-2: `bank_account_id` is optional, but when provided it must belong to the
+        requesting user — a plain FK by itself doesn't know or enforce that. Same
+        `get_owned` + `NotFoundError` (404, not 403 — D-020) pattern as
+        `_validate_distribution_category`, reused rather than reinvented."""
+        if bank_account_id is None:
+            return
+        account = self.accounts.get_owned(user.id, bank_account_id)
+        if account is None:
+            raise NotFoundError("Bank account not found.")
+
     def create(self, user: User, payload: ExpenseCreate) -> Expense:
         period = self._ensure_period_open(user, payload.financial_period_id)
         self._validate_distribution_category(period, payload.distribution_category_id)
+        self._validate_bank_account(user, payload.bank_account_id)
         expense = Expense(
             user_id=user.id,
             financial_period_id=payload.financial_period_id,
@@ -105,6 +119,8 @@ class ExpenseService:
             "distribution_category_id", expense.distribution_category_id
         )
         self._validate_distribution_category(period, effective_category_id)
+        effective_bank_account_id = values.get("bank_account_id", expense.bank_account_id)
+        self._validate_bank_account(user, effective_bank_account_id)
 
         before = {
             "name": expense.name,

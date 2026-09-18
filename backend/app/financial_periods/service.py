@@ -266,13 +266,16 @@ class FinancialPeriodService:
         final = calc_final_savings(automatic, manual_total)
 
         savings_row = db.execute(
-            select(Savings).where(Savings.financial_period_id == period.id)
+            select(Savings).where(
+                Savings.financial_period_id == period.id, Savings.user_id == user.id
+            )
         ).scalar_one_or_none()
         distributed_total = ZERO
         if savings_row is not None:
             allocated_amounts = db.execute(
                 select(SavingsAllocation.amount).where(
-                    SavingsAllocation.savings_id == savings_row.id
+                    SavingsAllocation.savings_id == savings_row.id,
+                    SavingsAllocation.user_id == user.id,
                 )
             ).scalars().all()
             distributed_total = sum((Decimal(a) for a in allocated_amounts), ZERO)

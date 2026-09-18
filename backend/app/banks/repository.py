@@ -24,6 +24,20 @@ class BankAccountRepository:
         )
         return self.db.execute(stmt).scalar_one_or_none()
 
+    def lock_owned(self, user_id: uuid.UUID, account_id: uuid.UUID) -> BankAccount | None:
+        """SELECT ... FOR UPDATE on the account row, held for the duration of a
+        read-modify-write of `current_balance` (D-025/F-1). Same pattern as
+        `DistributionRepository.lock_rule_for_update` and `SavingsRepository.lock_by_id`:
+        must be called instead of `get_owned` on every code path that mutates
+        `current_balance`, and the caller must not re-fetch the account afterwards (that
+        would drop the lock's effect on subsequent reads in this transaction)."""
+        stmt = (
+            select(BankAccount)
+            .where(BankAccount.id == account_id, BankAccount.user_id == user_id)
+            .with_for_update()
+        )
+        return self.db.execute(stmt).scalar_one_or_none()
+
     def list(
         self, user_id: uuid.UUID, *, is_active: bool | None, page: int, page_size: int
     ) -> tuple[list[BankAccount], int]:

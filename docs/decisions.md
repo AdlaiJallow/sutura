@@ -444,3 +444,54 @@ treatment already used for overspent categories — not an error state and not s
 that the user's current final savings can no longer actually cover), which is worse than the
 overspending case this codebase otherwise goes out of its way to surface. (b) Drop the CHECK
 constraint (chosen) — the formula was already correct; the constraint was the bug.
+
+---
+
+### D-024: `BankAccount.current_balance` may legitimately go negative — no insufficient-funds
+block on withdrawals or transfers, by the same "show it, don't hide it" philosophy as D-023
+
+**Context:** Raised as an informational note during the Phase 4 security review: nothing stops a
+`WITHDRAWAL` or a transfer's source leg from taking `current_balance` below zero, and there was no
+decision record for whether that's intentional. Spec §17/§18 don't state a rule either way.
+
+**Decision:** Allowed, deliberately. This codebase already treats a shortfall as something to
+surface, never something to silently prevent or clamp: negative `Category Remaining` (§13), negative
+`undistributed_total` (D-023). A cash or mobile-money account genuinely can go negative in real life
+(a fee posts, a mobile-money account is drawn down before the user notices) — Sutura's job is to show
+the resulting negative balance accurately, the same way it shows an overspent category, not to pretend
+the withdrawal never happened. If a future requirement wants a hard block (e.g. for a specific account
+type that can't legally go negative), that's a new, explicit decision — not something to infer from
+this one.
+
+**Options considered:** (a) Reject a withdrawal/transfer that would take `current_balance` negative —
+rejected as inconsistent with every other "show it" precedent in this codebase, and it would silently
+assume every account type behaves like a strict-no-overdraft bank account. (b) Allow it and surface it
+plainly (chosen).
+
+---
+
+### D-025: `BankAccount.current_balance` is recalculated under a row lock, not incrementally updated
+— fixing a real lost-update bug found in the Phase 4 security review
+
+**Context:** The Phase 4 security review (F-1) found that every balance-affecting write
+(`BankTransactionService.create`, `.transfer`, `SavingsAllocationService.create`) fetched the account
+via a plain `SELECT` (`BankAccountRepository.get_owned`, no `FOR UPDATE`) and then did
+`account.current_balance = Decimal(account.current_balance) + signed_amount` — a Python
+read-modify-write with no lock. Under Postgres's default READ COMMITTED isolation, two concurrent
+writes to the same account race: both read the same starting balance, and the second commit overwrites
+the first's effect instead of accumulating it. This also deviated from D-011 as originally written,
+which specified recalculating from `opening_balance + SUM(ledger)`, not incrementing a cached delta.
+
+**Decision:** Every code path that mutates `current_balance` now locks the account row
+(`SELECT ... FOR UPDATE`) before reading and updating it, closing the race directly — matching the
+same pattern already used for `DistributionRule` (D-009) and `Savings` (D-014) row locks elsewhere in
+this codebase. This is a targeted concurrency fix, not a redesign of D-011's reconciliation story; the
+nightly ledger-sum reconciliation job D-011 describes is still future work and remains the
+self-healing backstop for any drift that predates this fix.
+
+**Options considered:** (a) Recompute `current_balance` from `SUM(bank_transactions)` on every write
+(fully matching D-011's original wording) — more self-healing, but a larger change for what F-1
+actually needs (correctness under concurrency, not drift-repair) and better suited to arriving
+alongside the reconciliation job itself. (b) Row-lock the existing incremental update (chosen) — closes
+the race with a minimal, already-established pattern; revisit if the reconciliation job later makes the
+full recompute approach the natural place to consolidate this too.

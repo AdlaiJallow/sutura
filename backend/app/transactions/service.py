@@ -52,7 +52,10 @@ class BankTransactionService:
                 "transaction_type must be DEPOSIT, WITHDRAWAL, or ADJUSTMENT "
                 "(transfers use POST /bank-transactions/transfer)."
             )
-        account = self.accounts.get_owned(user.id, payload.bank_account_id)
+        # Locked (not `get_owned`) from the start (D-025/F-1): this same row is read-modified
+        # for `current_balance` below, and the lock must be held for the whole
+        # read-check-insert-update sequence to close the lost-update race.
+        account = self.accounts.lock_owned(user.id, payload.bank_account_id)
         if account is None:
             raise NotFoundError("Bank account not found.")
         if not account.is_active:
@@ -61,13 +64,23 @@ class BankTransactionService:
             )
         self._ensure_period_open(user, payload.financial_period_id)
 
+        # F-3: currency is derived from/validated against the account, never trusted as an
+        # independent client-supplied field — same principle already applied correctly in
+        # SavingsAllocationService.create (which derives currency from the account entirely).
+        currency = payload.currency.upper()
+        if currency != account.currency:
+            raise ValidationAppError(
+                f"Transaction currency ({currency}) does not match the bank account's "
+                f"currency ({account.currency})."
+            )
+
         txn = BankTransaction(
             user_id=user.id,
             bank_account_id=payload.bank_account_id,
             financial_period_id=payload.financial_period_id,
             transaction_type=payload.transaction_type,
             amount=payload.amount,
-            currency=payload.currency.upper(),
+            currency=currency,
             transaction_date=payload.transaction_date,
             description=payload.description,
             related_record_type="MANUAL",
@@ -97,24 +110,37 @@ class BankTransactionService:
         row on the source, one TRANSFER_IN row on the destination, sharing a `transfer_pair_id`,
         both balances updated in the same DB transaction (D-011).
 
-        Ownership is checked independently for both accounts via `get_owned` (D-020) — a source
+        Ownership is checked independently for both accounts via `lock_owned` (D-020) — a source
         or destination id belonging to another user is 404, identical to a genuinely missing id,
         never 403. A single audit entry is written (on the TRANSFER_OUT leg, cross-referencing
         the destination account) rather than two — one logical operation, one audit record,
         with both resulting transaction ids and the shared `transfer_pair_id` in `after_state`
         giving full traceability of both legs from that one entry.
+
+        Lock ordering (D-025/F-1): both accounts are locked `SELECT ... FOR UPDATE` in a
+        consistent order determined by sorting the two account ids themselves (not by
+        source/destination role) *before* either row is fetched. Two transfers running in
+        opposite directions between the same pair of accounts therefore always attempt to
+        acquire the same first lock, so the second transaction simply waits instead of the two
+        deadlocking on each other by locking in reverse order.
         """
         if payload.source_bank_account_id == payload.destination_bank_account_id:
             raise ValidationAppError("Cannot transfer to the same bank account.")
 
         self._ensure_period_open(user, payload.financial_period_id)
 
-        source = self.accounts.get_owned(user.id, payload.source_bank_account_id)
-        if source is None:
-            raise NotFoundError("Bank account not found.")
-        destination = self.accounts.get_owned(user.id, payload.destination_bank_account_id)
-        if destination is None:
-            raise NotFoundError("Bank account not found.")
+        ordered_ids = sorted(
+            (payload.source_bank_account_id, payload.destination_bank_account_id)
+        )
+        locked_accounts = {}
+        for account_id in ordered_ids:
+            locked = self.accounts.lock_owned(user.id, account_id)
+            if locked is None:
+                raise NotFoundError("Bank account not found.")
+            locked_accounts[account_id] = locked
+
+        source = locked_accounts[payload.source_bank_account_id]
+        destination = locked_accounts[payload.destination_bank_account_id]
 
         if not source.is_active:
             raise ValidationAppError("Cannot transfer from an inactive bank account.")
@@ -124,6 +150,20 @@ class BankTransactionService:
         transfer_pair_id = uuid.uuid4()
         amount = Decimal(payload.amount)
         currency = payload.currency.upper()
+
+        # F-3: validate the client-supplied currency against both legs' actual account
+        # currencies rather than trusting it — a transfer moves the same numeric amount to both
+        # legs, so it must actually match both accounts' currency, not just be well-formed.
+        if currency != source.currency:
+            raise ValidationAppError(
+                f"Transaction currency ({currency}) does not match the source bank account's "
+                f"currency ({source.currency})."
+            )
+        if currency != destination.currency:
+            raise ValidationAppError(
+                f"Transaction currency ({currency}) does not match the destination bank "
+                f"account's currency ({destination.currency})."
+            )
 
         out_txn = BankTransaction(
             user_id=user.id,
