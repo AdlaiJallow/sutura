@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Logo } from "@/components/brand/logo";
 import { PeriodProvider } from "./period-context";
 import { PeriodSelector } from "./period-selector";
 import { WorkflowNav } from "./workflow-nav";
@@ -29,9 +30,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <header className="border-b border-line bg-paper-raised">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
             <Link href="/dashboard" className="flex items-baseline gap-2">
-              <span className="font-display text-xl font-semibold tracking-tightish text-ink">
-                Sutura
-              </span>
+              <Logo size="lg" />
               <span className="hidden text-xs text-ink-faint sm:inline">
                 every dalasi, accounted for
               </span>
