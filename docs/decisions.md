@@ -1,0 +1,416 @@
+# Architecture Decision Log
+
+Canonical record of every non-obvious call made during Phase 1 (Discovery). Check here before
+re-deciding something already settled. Each entry: **Decision / Context / Options considered / Why
+this one**. Entries are numbered and immutable once written — a later change gets a new entry that
+supersedes an old one explicitly (never edit history in place, same rule we apply to financial data).
+
+Spec references are to `personal_finance_salary_distribution_ai_build_spec.md`.
+
+---
+
+### D-001: Automatic-savings eligibility is a per-category boolean, not a hardcoded category-name check
+
+**Context:** Spec §14/§26 defines `Automatic Savings = SUM(Eligible Positive Category Remaining
+Values)` but explicitly says eligibility "must be configurable rather than hidden in code" (§14).
+Categories are user-named free text (e.g. "Needs", "Rent Bucket", "Chop Money") so eligibility can't
+be inferred from a name.
+
+**Options considered:**
+1. Hardcode a list of category-name strings (e.g. "Needs", "Savings", "Wants") that count.
+2. Infer eligibility from category `percentage` size or position.
+3. Add a `contributes_to_automatic_savings BOOLEAN` column on `DistributionCategory`, user-editable,
+   defaulting to `true`.
+
+**Why this one:** Option 3 is the only one that satisfies the spec's explicit "configurable, not
+hidden in code" requirement. Default `true` means the common case (all categories roll their unused
+remainder into savings, matching the worked example in §14/§40) requires no user action; a user who
+wants a category's leftovers to simply expire (e.g. a "Gifts" category they don't want inflating
+savings) flips the flag off per category. Only **positive** remainders from eligible categories are
+summed — negative remainders (overspend) are never subtracted from automatic savings, per the exact
+wording of the formula ("Positive... Values").
+
+---
+
+### D-002: Multi-currency readiness = schema-ready, conversion-free; single currency enforced per period in v1
+
+**Context:** Spec §25: support GMD now, design so multiple currencies can be added later, never
+hardcode currency assumptions in business logic, but do not build FX conversion yet.
+
+**Decision:** Every money-bearing entity carries its own `currency CHAR(3)` (ISO 4217) column,
+defaulting to the user's `default_currency` (itself defaulting to `GMD`). `FinancialPeriod` carries a
+`base_currency`. The service layer rejects any write whose `currency` differs from the owning
+period's `base_currency` — there is no conversion table yet, so mixing currencies inside one period's
+totals would silently produce meaningless sums. `financial_engine` never has a currency literal
+baked into a formula; it operates on `(Decimal, currency)` pairs and only sums values that share a
+currency.
+
+**Options considered:** (a) no currency column at all, add later — rejected, would require a painful
+backfill/migration and violates "design so multiple currencies can be supported later" now, not
+later. (b) Build a currency-conversion/FX-rate table now — rejected as speculative complexity (rule
+13); nothing in Phase 1–4 needs it. (c) Schema-ready + single-currency-per-period enforcement
+(chosen) — gets the future-proofing without building unused conversion logic.
+
+**Consequence:** Adding real multi-currency support later is an additive migration (an `ExchangeRate`
+table + relaxing the per-period equality check + a "reporting currency" concept), not a schema
+rewrite.
+
+---
+
+### D-003: Recurring records are generated from a `RecurringTemplate`, never by sharing a mutable row
+
+**Context:** Spec §41 and CLAUDE.md are explicit: "a change in October must never rewrite September's
+history." §28's suggested entity list has no template concept, only the concrete record types.
+
+**Decision:** Introduce `RecurringTemplate` (not in the spec's suggested list, added per §28's
+"final schema may be improved by the architect"). It stores the recurring definition (type, amount,
+category, frequency, day-of-month, start/end period). A Celery job, run when a new `FinancialPeriod`
+is created (and as a monthly scheduled sweep as a safety net), materializes one concrete `Salary` /
+`Allowance` / `Income` / `Expense` row per active template for that period, stamping
+`recurring_template_id` and `is_recurring_generated = true` on the generated row. Editing or
+deactivating a template only changes what gets generated going forward; every already-generated row
+is an independent, freely editable/deletable record that has no live link back to the template's
+current values.
+
+**Options considered:** (a) One mutable "recurring" row whose amount is read each period — rejected
+outright, this is exactly the bug the spec warns against. (b) Cron duplicates the previous period's
+row verbatim without a template — rejected: no single place to edit "my rent changed," and no
+record of *why* a row was auto-created vs. manually entered. (c) Template + generated instances
+(chosen) — matches how mature billing/subscription systems separate "the recurring intent" from
+"the ledger entry."
+
+**Note:** v1 supports `frequency = MONTHLY` only (documented explicitly, not silently); weekly/biweekly
+recurrence is out of scope until requested (rule 13, no unused flexibility).
+
+---
+
+### D-004: Period close/reopen — append-only summary versions, no in-place rewrite
+
+**Context:** Spec §37/§23: closed periods aren't casually edited; if editing is allowed, it needs an
+explicit action, an audit event, a summary recalculation, and a visible "modified" indicator.
+
+**Decision:**
+- `FinancialPeriod.status` is `OPEN` or `CLOSED`.
+- **Close**: allowed only when open. Computes a `MonthlyFinancialSummary` row with
+  `version = 1, is_current = true, triggered_by = 'CLOSE'`, sets `closed_at`/`closed_by`, and writes
+  an `AuditLog` entry (`action = 'CLOSE'`). While closed, all direct writes to the period's financial
+  child records (`Salary`, `Allowance`, `Income`, `Expense`, `SavingsItem`, allocations) are rejected
+  by the service layer with a 409, regardless of what the route layer does — ownership/period-status
+  checks live in the service, not just the router (mirrors the ownership-check rule in CLAUDE.md).
+- **Reopen**: requires a mandatory `reason` string, flips status back to `OPEN`, increments
+  `reopened_count`, sets `last_reopened_at`, writes an `AuditLog` entry (`action = 'REOPEN'`,
+  `before_state`/`after_state` capturing the summary snapshot being superseded).
+- **Re-close after edits**: computes a *new* `MonthlyFinancialSummary` row
+  (`version = previous + 1, is_current = true, triggered_by = 'REOPEN_RECALC'`) and flips the
+  previous row's `is_current` to `false`. Old versions are never updated or deleted — the full
+  history of "what did September look like at each point in time" stays queryable.
+- The UI's "modified" indicator is simply `reopened_count > 0` (or `MAX(version) > 1`) on the period.
+
+**Options considered:** (a) Update the single summary row in place on every recalculation — rejected,
+loses the audit trail the spec insists on ("clearly indicate the period was modified" + full
+auditability in §36). (b) A separate `PeriodRevision` snapshot table duplicating every child table —
+rejected as heavy speculative complexity; the aggregate summary plus `AuditLog`'s before/after JSON
+already gives full traceability of *what* changed, without duplicating every table. (c) Versioned
+`MonthlyFinancialSummary` (chosen) — minimal new structure, directly satisfies the spec's wording.
+
+---
+
+### D-005: Attachments are scoped to `Expense` only in v1 — no polymorphic owner type yet
+
+**Context:** Spec §9 mentions "optional receipt/document" only for expenses. §28 lists a generic
+`Attachment` entity. Rule 13 (CLAUDE.md/spec §48-13): prefer simple solutions, no unused flexibility.
+
+**Decision:** `Attachment.expense_id` is a required, non-nullable FK. No `owner_type`/`owner_id`
+polymorphic pair. If a future phase needs attachments on bank transactions or income proof, that is
+a new, explicit decision (and likely a new migration), not a pre-built generic slot sitting unused
+today.
+
+**Options considered:** (a) Polymorphic `owner_type` + `owner_id` now — rejected as speculative;
+nothing in the spec asks for receipts anywhere but expenses, and a polymorphic FK can't be enforced
+by the database the way a real FK can (referential integrity is weaker). (b) One `Attachment` table
+per owning entity (e.g. `ExpenseAttachment`, future `IncomeAttachment`) — viable but premature since
+only one is needed today. (c) Single table, hard FK to `Expense` (chosen).
+
+---
+
+### D-006: `DistributionItem` is not a separate ledger — it is `Expense.distribution_category_id`
+
+**Context:** This is the most consequential ambiguity in the spec. §28 lists `DistributionItem` as
+its own entity. §12 shows "items under distribution categories" (Rent, Food, Transport...) that look
+identical in shape and amount to the `Expense` records described in §9 (which also has fields like
+name, category, amount, date...). If both were modeled as separate money-holding tables, the same
+real-world spend would be entered twice — directly contradicting §27's explicit warning: "an expense
+recorded under a category must not be counted twice simply because it also appears as [another
+record type]."
+
+**Decision:** There is no separate `DistributionItem` table. Every `Expense` row carries a required
+`distribution_category_id` FK (nullable only transiently, before a period has a distribution rule
+selected). `Category Used` (§12) is computed as
+`SUM(Expense.amount WHERE distribution_category_id = X AND deleted_at IS NULL)`. The spec's "items
+under distribution categories" *are* expenses, viewed through a category lens — not a parallel
+record type.
+
+`Expense` keeps a **second**, independent categorization: `expense_category` (Rent, Food,
+Transportation, Electricity, ... — the §9 suggested list), used for the "spending by category"
+analytics in §24. This is intentionally a second column, not a reuse of `distribution_category_id`,
+because the two taxonomies answer different questions ("which budget bucket did this draw down" vs.
+"what kind of thing was this") and collapsing them would force a user's "Needs" bucket to also be
+named "Rent," which breaks the moment a bucket contains more than one kind of spend (exactly the
+§12 worked example: Rent + Food + Transport + Electricity all under one "Needs" category).
+
+**Options considered:** (a) Keep `DistributionItem` as literally specified and let `Expense`
+optionally reference it — rejected, creates exactly the double-ledger risk §27 warns about, and begs
+the question of which row is authoritative for "actual spending." (b) Merge into `Expense` with two
+category columns (chosen). (c) Merge into `Expense` with one category column, dropping the §9
+suggested-category list — rejected, loses the §24 "spending by category" analytics dimension.
+
+**This decision should be revisited only if** a future requirement needs a category item that is
+*not* an actual cash expense (e.g. a pure "planned line item" with no real spend yet) — that would be
+a genuinely different entity, not a rename of what exists today.
+
+---
+
+### D-007: `Income.income_type` excludes `SALARY` and `ALLOWANCE` despite §8's literal list
+
+**Context:** §8 lists suggested income types including "Salary" and "Allowance" alongside "Per diem,"
+"Freelance," etc. This directly contradicts §27 ("if a Housing Allowance is already included in the
+salary/allowance calculation, it must not also be counted as separate Other Income") and CLAUDE.md's
+explicit instruction that "the data model must clearly distinguish salary/allowance records from
+generic income records."
+
+**Decision:** Treat §27 and CLAUDE.md's explicit double-counting rule as authoritative over §8's
+example list (which reads as illustrative of "kinds of money that come in," not a literal enum for
+the `Income` table). `Income.income_type` enum = `IN_COUNTRY_PAYMENT, PER_DIEM, FREELANCE, BUSINESS,
+INVESTMENT, OTHER`. Salary and allowances are only ever recorded through the dedicated `Salary` and
+`Allowance` tables. This is flagged here explicitly per developer rule 1/2 (don't invent silently,
+document the resolution) because it is a real contradiction in the source document, not a free
+choice.
+
+---
+
+### D-008: One `Salary` row per user per `FinancialPeriod`
+
+**Context:** §6 says "record their monthly net salary" (singular). Edge case §38-4 is "multiple
+income payments in one month," which is a different concern (extra/other income, not multiple net
+salary payments).
+
+**Decision:** `UNIQUE(user_id, financial_period_id)` on `Salary`. If a user is genuinely paid more
+than once in a calendar month from the same employer, the second payment is recorded via `Income`
+with `income_type = OTHER` (or a future dedicated type) and a note — it does not create a second
+`Salary` row. This keeps `Total Salary Income = Net Salary + Total Allowances` (§7) unambiguous: it
+is always exactly one salary figure.
+
+---
+
+### D-009: Percentage totals must equal exactly 100.00, enforced in the service layer inside a DB transaction — not a Postgres trigger (yet)
+
+**Context:** §10/§26: distribution rule percentages "must total exactly 100%" or include an explicit
+"Unallocated" category; §20 says the same for savings-distribution rules.
+
+**Decision:** `DistributionCategory.percentage` and `SavingsDistributionRuleItem.percentage` are
+`NUMERIC(5,2)`. Validation ("do all sibling rows for this rule sum to exactly 100.00") happens in the
+service layer, inside the same DB transaction that writes the category rows (using a row lock on the
+parent rule to prevent a race between two concurrent category edits — see D-018 on concurrency). No
+epsilon/rounding tolerance is applied: if percentages don't divide evenly, the user is expected to use
+the explicit "Unallocated" bucket (D-010) to absorb the remainder, exactly as the spec proposes as the
+escape hatch.
+
+**Options considered:** (a) Postgres `CONSTRAINT TRIGGER` summing sibling rows — rejected for v1 as
+more moving parts than needed while all writes go through one service layer (rule 13); revisit if a
+future bulk-import or direct-SQL path bypasses the API. (b) Application-layer validation only, no
+row lock — rejected, vulnerable to two concurrent requests both editing categories for the same rule
+and each seeing a stale sum. (c) Service-layer validation + explicit row lock (chosen).
+
+---
+
+### D-010: "Unallocated" is a boolean flag on `DistributionCategory`, not a name-matching convention
+
+**Context:** §10 offers "an explicit Unallocated category" as the alternative to requiring exactly
+100%. If this were detected by matching the string "Unallocated," it would break for non-English
+users or anyone who names it differently.
+
+**Decision:** `DistributionCategory.is_unallocated_bucket BOOLEAN DEFAULT false`, with a partial
+unique index ensuring at most one such category per rule. When present, this category behaves like
+any other for allocation/used/remaining purposes, but the UI labels it distinctly and it is excluded
+from `contributes_to_automatic_savings` by default (unallocated money sitting idle is not "savings"
+until the user says so).
+
+---
+
+### D-011: `BankAccount.current_balance` is denormalized and transactionally recalculated, reconciled nightly
+
+**Context:** §18: "Bank balances should be derived from a reliable transaction history where
+practical." §44: fast dashboard loading is a design goal. Edge case §38-33: "account balance
+mismatch."
+
+**Decision:** `current_balance` is a cached column, never written to directly by any endpoint. It is
+recalculated as `opening_balance + SUM(signed transaction effect)` inside the same DB transaction
+that inserts a `BankTransaction` (so reads stay O(1) instead of summing the full ledger on every
+dashboard load). A nightly Celery job independently recomputes the true sum from the ledger and
+compares it to the cached value; a mismatch writes an `AuditLog` entry and surfaces a "balance needs
+attention" flag rather than silently overwriting either number.
+
+**Options considered:** (a) Always compute on read (`SUM` over `BankTransaction` every time) —
+correct but doesn't scale with §44's "fast dashboard loading" goal once transaction history is long.
+(b) Cache with periodic reconciliation (chosen) — matches "derived... where practical" without a
+per-request full-table scan.
+
+---
+
+### D-012: `Savings` is a per-period cached aggregate; `SavingsItem` is the only source-of-truth savings table
+
+**Context:** §28 lists both `Savings` and `SavingsItem` with no further definition. §15/§16 describe
+manual savings entries (clearly `SavingsItem`) and a rollup of automatic + manual + distributed +
+undistributed (§15's "Final Savings" table). Automatic savings itself is *derived* (sum of eligible
+positive category remainders — D-001), not something a user directly enters.
+
+**Decision:** `Savings` is a 1:1-with-`FinancialPeriod` cache row holding the current computed
+rollup (`automatic_savings_computed`, `manual_savings_total`, `final_savings_total`,
+`distributed_total`, `undistributed_total`, `last_calculated_at`). It is recalculated by
+`financial_engine.savings_calculator` whenever an input changes (expense added/edited/deleted,
+manual `SavingsItem` added, allocation made) — same "cache derived from source records, recalculated
+transactionally" pattern as D-011, for the same dashboard-performance reason. `SavingsItem` holds the
+actual manual entries (§16 fields). Automatic savings itself has no row of its own outside this cache
+and the frozen `MonthlyFinancialSummary` snapshot taken at period close — it would otherwise be a
+third place the same derived number could drift out of sync.
+
+---
+
+### D-013: Savings-to-account distribution rules are a distinct entity from income distribution rules
+
+**Context:** §20 describes percentage-based rules for splitting *final savings* across bank
+destinations (Bank A 40%, Bank B 30%...) — structurally similar to §10's income `DistributionRule`
+but conceptually different (splits savings money among accounts, not income among budget categories).
+
+**Decision:** Added `SavingsDistributionRule` + `SavingsDistributionRuleItem` (new entities beyond
+§28's list, permitted by "the final schema may be improved by the architect"). Each item references
+either a `BankAccount` or a free-text `destination_label` (for conceptual destinations like "Emergency
+Fund" that aren't a real account) and a percentage; percentages must sum to 100.00 (same validation
+approach as D-009).
+
+---
+
+### D-014: `SavingsAllocation.bank_account_id` is nullable; conceptual destinations are allowed
+
+**Context:** §15's example includes "Emergency Fund D200" as an allocation destination alongside real
+banks, with no indication an Emergency Fund must be a registered `BankAccount`.
+
+**Decision:** `SavingsAllocation` requires *either* `bank_account_id` *or* `destination_label`, not
+both null (DB `CHECK`). Only allocations with a real `bank_account_id` generate a corresponding
+`BankTransaction` (a conceptual destination has no ledger to post to). This lets users track
+"D200 earmarked for Emergency Fund" without forcing them to first create a bank account for every
+savings goal, while still using real transaction-backed accounting wherever a real account exists
+(§18).
+
+---
+
+### D-015: UUID primary keys everywhere
+
+**Context:** CLAUDE.md/§34: "a user must never be able to reach another user's records by changing an
+ID." Ownership checks (filtering every query by `user_id`) are the real defense and are mandatory
+regardless of key type — but sequential integer IDs make enumeration/guessing trivial as an
+additional attack surface, and expose row-count/growth-rate information in URLs and API responses.
+
+**Decision:** Every table's primary key is a `UUID` (v4), generated application- or DB-side
+(`gen_random_uuid()`). This is defense in depth, not a substitute for ownership checks, which every
+service method still performs explicitly.
+
+---
+
+### D-016: Soft delete for financial event records; bank ledger is fully append-only
+
+**Context:** Edge case §38-18 "deleted income"; §36 requires auditing deletions with before-state;
+§18 implies a ledger model for bank transactions.
+
+**Decision:** `Salary`, `Allowance`, `Income`, `Expense`, `SavingsItem` all carry a nullable
+`deleted_at`. A "delete" sets this timestamp (and writes an `AuditLog` with the full before-state),
+excluded from all sums via `WHERE deleted_at IS NULL`, but never physically removed — so a closed
+period's history is never structurally altered even if something is later found to be wrong and
+corrected via the reopen flow (D-004). Deleting is only permitted while the owning period is `OPEN`;
+deleting a record that belongs to a `CLOSED` period requires reopening first.
+
+`BankTransaction` is stricter still: no `deleted_at`, no `UPDATE` path at all. Corrections happen by
+posting a new `ADJUSTMENT` transaction that references the one being corrected via
+`related_record_id`. This matches how real bank/ledger systems avoid rewriting history and directly
+serves §18's "transaction-based accounting rather than simply changing balances."
+
+---
+
+### D-017: `FinancialPeriod` granularity is a whole calendar month in v1, not an arbitrary date range
+
+**Context:** §5 says a period "normally" represents one calendar month, leaving the door open to
+other granularities, but gives no concrete alternative use case.
+
+**Decision:** v1 models `FinancialPeriod` as `(user_id, year, month)` with a uniqueness constraint,
+and derives `start_date`/`end_date` from that. No arbitrary custom-range periods. This is simpler to
+reason about for recurring-record generation (D-003), period navigation, and analytics
+month-over-month comparisons (§24), and nothing in the spec's worked examples needs anything finer or
+coarser. If a real need for non-monthly periods emerges, it is a new decision, not a silently-assumed
+capability sitting unused today (rule 13).
+
+---
+
+### D-018: Concurrency — optimistic locking via `updated_at`/version check on money-affecting writes
+
+**Context:** Edge case §38-30 "concurrent updates." CLAUDE.md doesn't specify a mechanism.
+
+**Decision:** Endpoints that mutate a record participating in a sum (`Expense`, `Allowance`,
+`Income`, `DistributionCategory`, `SavingsAllocation`) require the client to send back the
+`updated_at` value it last read (via an `If-Unmodified-Since`-style check enforced in the service
+layer, not just relying on HTTP semantics); a stale write is rejected with 409 rather than silently
+overwriting a concurrent change. Aggregate recalculation (Savings cache, category remaining) always
+re-reads from persisted rows rather than trusting an in-memory total passed between requests — this
+is the same principle as "never trust a client-submitted total" (§46) applied to server-side request
+handling too.
+
+---
+
+### D-019: Money columns are `NUMERIC(14,4)`; percentages are `NUMERIC(5,2)`
+
+**Context:** §25/§26: decimal arithmetic only, currency-ready for the future, GMD uses 2 decimal
+places.
+
+**Decision:** All monetary amounts are stored as `NUMERIC(14,4)` — two extra decimal places of
+headroom beyond GMD's 2dp display convention, so a future currency that needs 3–4 decimal places
+(some do) doesn't require a column migration; GMD amounts are simply always `.0000`-aligned to whole
+cents in practice, and the presentation layer rounds to each currency's proper display precision.
+Percentages are `NUMERIC(5,2)` (range 0.00–100.00). `Decimal` is used exclusively in Python; float
+never appears in any code path that touches money, per rule 4.
+
+---
+
+### D-020: API error responses use 404 (not 403) for cross-user record access
+
+**Context:** §34: never let a user reach another user's records by changing an ID.
+
+**Decision:** When an authenticated user requests a record ID that exists but belongs to another
+user, the API returns `404 Not Found`, identical to the response for a genuinely nonexistent ID —
+never `403 Forbidden`. A 403 would confirm the record's existence, leaking information. Every
+repository-layer query filters by the authenticated `user_id` as part of the `WHERE` clause itself
+(not as a post-fetch check), so a cross-user record is architecturally indistinguishable from a
+missing one.
+
+---
+
+### D-021: Pagination/filtering/sorting/error envelope conventions (applies to every list endpoint)
+
+**Decision:** Offset-based pagination (`page`, `page_size`, max `page_size = 100`), response envelope
+`{"data": [...], "meta": {"page", "page_size", "total_items", "total_pages"}}`; filtering via
+resource-specific query params plus universal `date_from`/`date_to` and `financial_period_id` where
+applicable; sorting via `sort_by`/`sort_dir`; errors as
+`{"error": {"code", "message", "field_errors": [...]}}`. Chosen over cursor-based pagination for
+simplicity (rule 13) — nothing in this app has the row-count or real-time-insert profile that
+usually motivates cursors; revisit only if a specific list (e.g. bank transactions on a
+years-old account) proves slow under offset pagination.
+
+---
+
+### D-022: Notifications and advanced analytics/ML are explicitly out of scope for the schema built now
+
+**Context:** §43 says the architecture should be "future-ready" for notifications without making them
+a core dependency; §24 explicitly defers ML/forecasting until the core accounting model is stable.
+
+**Decision:** No `Notification` table or Celery notification tasks are built in Phase 1. The only
+future-readiness commitment made now is that `AuditLog` and the module boundaries (`common/`) provide
+enough of an event trail that a notification module could later subscribe to "important financial
+changes" without modifying existing modules. No forecasting tables/columns are added anywhere.

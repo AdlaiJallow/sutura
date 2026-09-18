@@ -1,0 +1,22 @@
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Local Postgres data dir used for sandbox verification (see backend/.pgdata)
+**/.pgdata/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Env files (per-app .gitignore already excludes these; kept here as a backstop)
+.env
+.env.local
+!.env.example

@@ -1,0 +1,108 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Sutura design tokens live in two places on purpose:
+   - tailwind.config.ts: the Sutura-specific palette (paper/ink/rust, and the
+     semantic on-track/overspent/saved/planned states), typography, radius,
+     shadow, and motion scale — the identity of this product.
+   - here: the small set of structural CSS variables shadcn/ui's primitives
+     (Button, Card, Input, ...) read (--primary, --border, --ring, etc.), set
+     to the same palette so generated components inherit the identity instead
+     of shadcn's default neutral-gray look. */
+@config "../tailwind.config.ts";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+:root {
+  /* Warm paper ledger, not a dark-mode SaaS dashboard — a deliberate choice
+     for a product about clarity, not a glowing "control panel" feel. Dark
+     mode is out of scope for Phase 2 (tracked, not forgotten). */
+  --background: #faf6ef;
+  --foreground: #241c14;
+  --card: #ffffff;
+  --card-foreground: #241c14;
+  --popover: #ffffff;
+  --popover-foreground: #241c14;
+  --primary: #c1502e;
+  --primary-foreground: #fdf9f2;
+  --secondary: #f1eadd;
+  --secondary-foreground: #241c14;
+  --muted: #f1eadd;
+  --muted-foreground: #5b4e40;
+  --accent: #fbeee7;
+  --accent-foreground: #82311a;
+  --destructive: #b3402c;
+  --destructive-foreground: #fdf9f2;
+  --border: #e4d9c6;
+  --input: #e4d9c6;
+  --ring: #c1502e;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  /* Every figure in the app is set in the ledger mono with tabular numerals,
+     so amounts in a column always line up like a real ledger. */
+  .figure {
+    @apply font-mono tabular-nums;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Thin warm scrollbar for the horizontal workflow tab strip and tables. */
+  .ledger-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .ledger-scroll::-webkit-scrollbar {
+    height: 6px;
+  }
+  .ledger-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 999px;
+  }
+}
