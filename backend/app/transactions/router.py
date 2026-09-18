@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.deps import get_current_user
 from app.common.schemas import Page, paginate_meta
-from app.transactions.schemas import BankTransactionCreate, BankTransactionRead
+from app.transactions.schemas import (
+    BankTransactionCreate,
+    BankTransactionRead,
+    BankTransferCreate,
+    BankTransferRead,
+)
 from app.transactions.service import BankTransactionService
 from app.users.models import User
 
@@ -50,6 +55,20 @@ def create_bank_transaction(
 ) -> BankTransactionRead:
     txn = BankTransactionService(db).create(current_user, payload)
     return BankTransactionRead.model_validate(txn)
+
+
+@router.post("/transfer", response_model=BankTransferRead, status_code=status.HTTP_201_CREATED)
+def create_bank_transfer(
+    payload: BankTransferCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BankTransferRead:
+    out_txn, in_txn = BankTransactionService(db).transfer(current_user, payload)
+    return BankTransferRead(
+        transfer_pair_id=out_txn.transfer_pair_id,
+        source_transaction=BankTransactionRead.model_validate(out_txn),
+        destination_transaction=BankTransactionRead.model_validate(in_txn),
+    )
 
 
 @router.get("/{txn_id}", response_model=BankTransactionRead)

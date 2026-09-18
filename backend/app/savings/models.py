@@ -14,7 +14,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.common.base import Base, Money, Percentage, SoftDeleteMixin, TimestampMixin, UUIDPKMixin
 
@@ -23,10 +23,11 @@ class Savings(UUIDPKMixin, TimestampMixin, Base):
     """spec §15/§28 — per-period cached rollup (D-012), recalculated from source records."""
 
     __tablename__ = "savings"
-    __table_args__ = (
-        UniqueConstraint("financial_period_id", name="ux_savings_period"),
-        CheckConstraint("undistributed_total >= 0", name="ck_savings_undistributed_nonneg"),
-    )
+    __table_args__ = (UniqueConstraint("financial_period_id", name="ux_savings_period"),)
+    # No CHECK constraint on undistributed_total: it can legitimately go negative when a
+    # SavingsAllocation was made against a final_savings_total that later drops (see
+    # docs/decisions.md D-023) — the same "show it, don't hide it" treatment this codebase
+    # already gives negative Category Remaining (spec §13/§34, spec edge case §38-35).
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
@@ -85,6 +86,10 @@ class SavingsDistributionRule(UUIDPKMixin, TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    items: Mapped[list["SavingsDistributionRuleItem"]] = relationship(
+        back_populates="savings_distribution_rule", cascade="all, delete-orphan"
+    )
+
 
 class SavingsDistributionRuleItem(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "savings_distribution_rule_items"
@@ -103,6 +108,10 @@ class SavingsDistributionRuleItem(UUIDPKMixin, TimestampMixin, Base):
     )
     destination_label: Mapped[str | None] = mapped_column(String(150), nullable=True)
     percentage: Mapped[object] = mapped_column(Percentage, nullable=False)
+
+    savings_distribution_rule: Mapped["SavingsDistributionRule"] = relationship(
+        back_populates="items"
+    )
 
 
 class SavingsAllocation(UUIDPKMixin, TimestampMixin, Base):

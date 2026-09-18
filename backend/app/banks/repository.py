@@ -1,6 +1,8 @@
 import uuid
+from datetime import datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.banks.models import BankAccount
@@ -37,3 +39,30 @@ class BankAccountRepository:
         self.db.add(account)
         self.db.flush()
         return account
+
+    def update_owned(
+        self,
+        user_id: uuid.UUID,
+        account_id: uuid.UUID,
+        expected_updated_at: datetime,
+        values: dict[str, Any],
+    ) -> int:
+        """Same atomic optimistic-locking technique as `common.repository_utils.conditional_update`
+        (D-018), but written by hand here instead of sharing that helper: `BankAccount` has no
+        `deleted_at` column (it is deactivated via `is_active`, not soft-deleted — spec §17 has
+        no notion of a deleted bank account, only an inactive one), and the shared helper's WHERE
+        clause unconditionally filters on `model.deleted_at.is_(None)`, which would raise on a
+        model lacking that column."""
+        if not values:
+            return 0
+        stmt = (
+            update(BankAccount)
+            .where(
+                BankAccount.id == account_id,
+                BankAccount.user_id == user_id,
+                BankAccount.updated_at == expected_updated_at,
+            )
+            .values(**values)
+        )
+        result = self.db.execute(stmt)
+        return result.rowcount

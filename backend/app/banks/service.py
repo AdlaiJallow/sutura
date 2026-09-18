@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from app.audit.service import AuditService
 from app.banks.models import BankAccount
 from app.banks.repository import BankAccountRepository
-from app.banks.schemas import BankAccountCreate
-from app.common.errors import NotFoundError
+from app.banks.schemas import BankAccountCreate, BankAccountUpdate
+from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.users.models import User
 
 
@@ -54,6 +54,52 @@ class BankAccountService:
         self, user: User, *, is_active: bool | None, page: int, page_size: int
     ) -> tuple[list[BankAccount], int]:
         return self.repo.list(user.id, is_active=is_active, page=page, page_size=page_size)
+
+    def update(self, user: User, account_id: uuid.UUID, payload: BankAccountUpdate) -> BankAccount:
+        account = self.get(user, account_id)
+
+        data = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
+        identifier_provided = "account_identifier" in data
+        raw_identifier = data.pop("account_identifier", None)
+        if identifier_provided:
+            data["account_identifier_last4"] = raw_identifier[-4:] if raw_identifier else None
+
+        if not data:
+            raise ValidationAppError("No fields provided to update.")
+
+        before = {
+            "account_name": account.account_name,
+            "institution_name": account.institution_name,
+            "account_type": account.account_type,
+            "account_identifier_last4": account.account_identifier_last4,
+            "notes": account.notes,
+            "is_active": account.is_active,
+        }
+
+        rowcount = self.repo.update_owned(user.id, account_id, payload.expected_updated_at, data)
+        if rowcount == 0:
+            raise ConflictError(
+                "This bank account was modified by another request. Reload and try again."
+            )
+
+        updated = self.get(user, account_id)
+        self.audit.record(
+            user_id=user.id,
+            entity_type="BankAccount",
+            entity_id=updated.id,
+            action="UPDATE",
+            before_state=before,
+            after_state={
+                "account_name": updated.account_name,
+                "institution_name": updated.institution_name,
+                "account_type": updated.account_type,
+                "account_identifier_last4": updated.account_identifier_last4,
+                "notes": updated.notes,
+                "is_active": updated.is_active,
+            },
+        )
+        self.db.commit()
+        return updated
 
     def deactivate(self, user: User, account_id: uuid.UUID) -> None:
         account = self.get(user, account_id)

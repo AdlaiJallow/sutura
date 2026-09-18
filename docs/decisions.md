@@ -414,3 +414,33 @@ a core dependency; §24 explicitly defers ML/forecasting until the core accounti
 future-readiness commitment made now is that `AuditLog` and the module boundaries (`common/`) provide
 enough of an event trail that a notification module could later subscribe to "important financial
 changes" without modifying existing modules. No forecasting tables/columns are added anywhere.
+
+---
+
+### D-023: `Savings.undistributed_total` may go negative — the original `>= 0` CHECK contradicted this
+codebase's own overspending philosophy and was removed
+
+**Context:** Discovered during Phase 4 (Accounts) as a real bug, not a hypothetical: `Savings` had
+`CheckConstraint("undistributed_total >= 0", name="ck_savings_undistributed_nonneg")` (D-012's
+original migration). `Undistributed Savings = Final Savings - Savings Distributed` (§26) is computed
+in `FinancialPeriodService._compute_summary` with no clamping — correctly, since spec §13/§34 and
+D-006/D-001 establish throughout this codebase that a shortfall (overspending, in that case) is
+*shown as a visible negative value*, never clamped to zero and never allowed to silently corrupt a
+write. "Negative final savings" is explicitly spec edge case §38-35, not an exotic scenario: it
+happens whenever a `SavingsAllocation` was made against a `final_savings_total` that later drops (a
+backing manual `SavingsItem` gets edited down, or an automatic-savings-eligible category's remaining
+shrinks because an expense was added after the allocation). Before this fix, that entirely normal
+sequence of edits crashed the next summary recalculation with a raw `IntegrityError`/500 instead of
+surfacing the shortfall.
+
+**Decision:** Drop `ck_savings_undistributed_nonneg` (migration + model). `undistributed_total` now
+persists exactly what the formula produces, including negative values, matching how `Category
+Remaining` has never had an analogous floor. The API/UI treats a negative `undistributed_total` as a
+visible warning state ("you've allocated more than your current final savings covers") — the same
+treatment already used for overspent categories — not an error state and not something to hide.
+
+**Options considered:** (a) Clamp `undistributed_total = max(final - distributed, 0)` in
+`_compute_summary` — rejected: this actively hides a real discrepancy (money marked as distributed
+that the user's current final savings can no longer actually cover), which is worse than the
+overspending case this codebase otherwise goes out of its way to surface. (b) Drop the CHECK
+constraint (chosen) — the formula was already correct; the constraint was the bug.

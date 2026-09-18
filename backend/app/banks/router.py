@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.banks.schemas import BankAccountCreate, BankAccountRead
+from app.banks.schemas import BankAccountCreate, BankAccountRead, BankAccountUpdate
 from app.banks.service import BankAccountService
 from app.common.database import get_db
 from app.common.deps import get_current_user
@@ -47,6 +47,17 @@ def get_bank_account(
     db: Session = Depends(get_db),
 ) -> BankAccountRead:
     account = BankAccountService(db).get(current_user, account_id)
+    return BankAccountRead.model_validate(account)
+
+
+@router.patch("/{account_id}", response_model=BankAccountRead)
+def update_bank_account(
+    account_id: uuid.UUID,
+    payload: BankAccountUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BankAccountRead:
+    account = BankAccountService(db).update(current_user, account_id, payload)
     return BankAccountRead.model_validate(account)
 
 
