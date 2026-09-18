@@ -21,22 +21,17 @@ class LoginRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
+    """Login response body. The refresh token is never returned here (D-026) — it is delivered
+    exclusively via an httpOnly `Set-Cookie` header, never as a JSON field a script could read.
+    """
+
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 
 class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
-class LogoutRequest(BaseModel):
-    refresh_token: str
 
 
 class VerifyEmailRequest(BaseModel):

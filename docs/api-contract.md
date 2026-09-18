@@ -7,9 +7,17 @@ full OpenAPI schema (field-by-field types are in `erd.md`).
 ## 0. Conventions (apply to every endpoint below)
 
 **Auth.** Every endpoint except `auth/*` requires a valid access token
-(`Authorization: Bearer <jwt>` for both web and mobile; web additionally relies on an httpOnly
-refresh cookie for the refresh flow). Every query is filtered by the authenticated user's `id` at
-the repository layer — never by trusting an `id` in the path alone.
+(`Authorization: Bearer <jwt>` for both web and mobile). The access token itself never travels in a
+cookie (CSRF defense, D-026) — only in the `Authorization` header. The refresh token travels
+exclusively as an httpOnly, `SameSite=Lax`, path-scoped (`/api/v1/auth`) cookie set by
+`/auth/login` and rotated by `/auth/refresh` (D-026); it is never present in any JSON request or
+response body. **Known gap:** this is currently cookie-only, which works for the browser-based web
+client but not yet for the Flutter mobile client (a cookie jar isn't the natural token store on
+mobile) — the Mobile phase (spec §47) needs an explicit decision here (e.g. a `platform` hint that
+switches `/auth/refresh` to also accept a body-delivered token for non-browser clients) before
+mobile auth is implemented; don't assume the current cookie-only shape silently extends to mobile.
+Every query is filtered by the authenticated user's `id` at the repository layer — never by
+trusting an `id` in the path alone.
 
 **Ownership / cross-user access.** Requesting a record ID that exists but belongs to another user
 returns `404 Not Found`, identical to a genuinely missing ID (D-020) — never `403`.
@@ -65,9 +73,9 @@ schemas write-only) echoing the value last read; mismatch returns `409`.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/auth/register` | email, password, full_name → creates user, sends verification email |
-| POST | `/auth/login` | email, password → access + refresh tokens |
-| POST | `/auth/refresh` | refresh token (cookie for web, body for mobile) → new access token |
-| POST | `/auth/logout` | invalidates refresh token |
+| POST | `/auth/login` | email, password → `{access_token}` in the body; refresh token is set as an httpOnly `Set-Cookie` (D-026), never returned in JSON |
+| POST | `/auth/refresh` | no body; refresh token is read from the cookie. Rotates it — revokes the presented token and sets a **new** refresh cookie alongside the new `{access_token}`. Missing/invalid/revoked/expired cookie → `401` |
+| POST | `/auth/logout` | no body; reads the refresh token from the cookie, revokes it server-side, and clears the cookie |
 | POST | `/auth/verify-email` | token from email link |
 | POST | `/auth/resend-verification` | |
 | POST | `/auth/forgot-password` | email → sends reset link |

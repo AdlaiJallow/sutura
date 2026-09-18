@@ -495,3 +495,46 @@ actually needs (correctness under concurrency, not drift-repair) and better suit
 alongside the reconciliation job itself. (b) Row-lock the existing incremental update (chosen) — closes
 the race with a minimal, already-established pattern; revisit if the reconciliation job later makes the
 full recompute approach the natural place to consolidate this too.
+
+---
+
+### D-026: Refresh token delivered via httpOnly cookie, not the JSON response body — fixing a
+real backend/architecture-doc mismatch found starting Phase 5
+
+**Context:** `docs/architecture.md` §2/§5 states, as an already-made Phase 1 decision: "Web uses the
+browser session (httpOnly refresh cookie + short-lived access token held in memory)... CSRF protection
+applies there." The Phase 2 backend build never implemented this — `POST /auth/login` and
+`POST /auth/refresh` return the refresh token as a plain field in the JSON body
+(`TokenResponse(access_token=access, refresh_token=refresh)`, `app/auth/router.py`), and the frontend's
+`lib/api.ts` had a comment referencing this exact architecture-doc section while never actually being
+wired to receive a cookie, because the backend never sent one. Neither side was maliciously wrong; the
+contract between them was simply never implemented, only commented.
+
+**Decision:** Fix the backend to match the already-documented design, rather than downgrade the design
+to match the easier-to-build code (same principle as D-023/D-025: the formula/architecture was right,
+the implementation was the bug):
+- `POST /auth/login` sets the refresh token via `Set-Cookie` (`httponly=True`, `samesite="lax"`,
+  `secure=True` in production, `path=/api/v1/auth`) and returns only `access_token` in the JSON body.
+- `POST /auth/refresh` reads the refresh token from that cookie (not a request body field), and
+  **rotates** it — issues a new refresh token, revokes the old one, sets a new cookie — since the
+  token-hash/revocation infrastructure already exists in `AuthRepository` and rotation is a real
+  security improvement (limits the blast radius of a leaked refresh token to one use) for a small
+  addition on top of work already being done here.
+- `POST /auth/logout` reads the cookie, revokes that token server-side, and clears the cookie.
+- CSRF: the access token travels only in an `Authorization: Bearer` header (never a cookie), which a
+  cross-site request cannot forge; `/auth/refresh` is the one cookie-authenticated endpoint, and
+  `SameSite=Lax` is the chosen defense for it rather than a double-submit CSRF token scheme (rule 13:
+  simplest solution that actually closes the risk — `Lax` blocks the cross-site POST this endpoint
+  would need to be attacked with).
+- Frontend: the access token moves from `localStorage` to an in-memory holder (module-level variable or
+  a React context, not persisted storage), matching architecture.md's "held in memory" wording. On app
+  boot, a silent `credentials: "include"` call to `/auth/refresh` (the cookie goes automatically) mints
+  a fresh access token before any protected page renders; if that call fails, the user is redirected to
+  `/login`. This is also how "am I logged in" is determined — there is no separate persisted
+  "is-authenticated" flag to go stale.
+
+**Options considered:** (a) Keep both tokens in `localStorage`, drop the httpOnly-cookie plan — rejected:
+this is strictly less secure (a refresh token in `localStorage` is readable by any successful XSS,
+which is exactly what an httpOnly cookie is designed to prevent) and contradicts a decision already
+made deliberately in Phase 1, not something to quietly abandon because the simpler path was already
+half-built. (b) Implement the documented design properly (chosen).

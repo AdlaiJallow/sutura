@@ -93,13 +93,30 @@ class AuthService:
         self.db.commit()
         return access, raw_refresh
 
-    def refresh(self, raw_refresh_token: str) -> str:
+    def refresh(self, raw_refresh_token: str) -> tuple[str, str]:
+        """Validate the presented refresh token, then rotate it: issue a brand-new refresh token
+        and revoke the old one (D-026). Rotation limits the blast radius of a leaked/stolen
+        refresh token to a single use — reuse of a revoked token fails the same way an invalid
+        token would.
+        """
         token_row = self.repo.get_refresh_token_by_hash(hash_token(raw_refresh_token))
         if token_row is None or token_row.revoked_at is not None:
             raise UnauthorizedError("Invalid refresh token.")
         if token_row.expires_at < datetime.now(timezone.utc):
             raise UnauthorizedError("Refresh token has expired.")
-        return create_access_token(token_row.user_id)
+
+        access = create_access_token(token_row.user_id)
+        new_raw_refresh = generate_raw_token()
+        new_refresh_row = RefreshToken(
+            user_id=token_row.user_id,
+            token_hash=hash_token(new_raw_refresh),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=settings.refresh_token_expire_days),
+        )
+        self.repo.add_refresh_token(new_refresh_row)
+        self.repo.revoke_refresh_token(token_row)
+        self.db.commit()
+        return access, new_raw_refresh
 
     def logout(self, raw_refresh_token: str) -> None:
         token_row = self.repo.get_refresh_token_by_hash(hash_token(raw_refresh_token))
