@@ -50,20 +50,20 @@ export interface FinancialPeriod {
   last_reopened_at: ISODateTime | null;
 }
 
-// NOTE: as of Phase 5 part 1, the backend has no `GET /distributions/{period_id}`
-// (or equivalent) endpoint that returns per-category allocation/used/remaining for
-// a period — only `/distribution-rules` CRUD (name + percentage only, no computed
-// amounts). `DistributionView`/`DistributionCategorySummary` describe the shape such
-// an endpoint would need to return (and what `CategoryProgressBar` already renders),
-// kept here for the landing page's illustrative preview and for the real `/distribution`
-// page once that backend endpoint exists. Flagged rather than invented — see the
-// Phase 5 part 1 handback notes: this is a real gap, not a client-side shortcut.
+// GET /distributions/{period_id} — DistributionViewRead (Phase 5 part 3, shape confirmed
+// live against the running backend). Read-only, server-computed: allocation/used/remaining
+// per category plus period totals, derived from `financial_engine.distribution_calculator`
+// and never re-derived client-side (spec §9/§26/§27, CLAUDE.md). A period with no
+// distribution rule selected yet is a normal 200 — `distribution_rule_id`/`_name` are
+// `null` and `categories` is `[]`, not an error — the UI must treat that as an empty
+// state, not a failure.
 export interface DistributionCategorySummary {
   id: string;
   name: string;
   percentage: Percentage;
   allocation: Money;
   used: Money;
+  /** May be negative when the category is overspent — shown as-is, never clamped (spec §13/§38). */
   remaining: Money;
   is_overspent: boolean;
   contributes_to_automatic_savings: boolean;
@@ -72,10 +72,36 @@ export interface DistributionCategorySummary {
 
 export interface DistributionView {
   financial_period_id: string;
+  distribution_rule_id: string | null;
+  distribution_rule_name: string | null;
+  total_monthly_income: Money;
   categories: DistributionCategorySummary[];
   total_allocation: Money;
   total_used: Money;
   total_remaining: Money;
+}
+
+// GET/POST/PATCH /distribution-rules, PUT /distribution-rules/{id}/categories —
+// DistributionRuleRead. A distinct resource from `DistributionView` above: this is the
+// CRUD rule *definition* (name + percentage only) a user builds once and reuses across
+// periods, never the computed per-period amounts (see the comment on `DistributionView`).
+export interface DistributionRuleCategory {
+  id: string;
+  name: string;
+  percentage: Percentage;
+  contributes_to_automatic_savings: boolean;
+  is_unallocated_bucket: boolean;
+  display_order: number;
+}
+
+export interface DistributionRule {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  is_default: boolean;
+  categories: DistributionRuleCategory[];
+  updated_at: ISODateTime;
 }
 
 // GET /savings/{period_id} — the live, source-of-truth savings rollup (D-012).

@@ -130,18 +130,37 @@ import type {
   Allowance,
   AuthTokens,
   BankAccountSummary,
+  DistributionRule,
+  DistributionView,
   Expense,
+  ExpenseCategory,
   FinancialPeriod,
   IncomeRecord,
   IncomeType,
   MonthlySummary,
   Paginated,
+  PaymentMethod,
   RegisterResult,
   Salary,
   SalaryStatus,
   SavingsSummary,
   UserProfile,
 } from "./types";
+
+/** Shared shape for a distribution category row sent to the backend, whether
+ * creating a rule (`POST /distribution-rules`) or replacing its categories
+ * (`PUT /distribution-rules/{id}/categories`, where `id` marks an existing row
+ * to update in place — omitted for a new one). Percentages are raw strings the
+ * user typed, never `Number(...)`-round-tripped (same rule as every other
+ * money/percentage field in this file). */
+export interface DistributionCategoryInput {
+  id?: string;
+  name: string;
+  percentage: string;
+  contributes_to_automatic_savings?: boolean;
+  is_unallocated_bucket?: boolean;
+  display_order?: number;
+}
 
 export const api = {
   auth: {
@@ -175,6 +194,13 @@ export const api = {
       apiFetch<FinancialPeriod>(`/financial-periods/${id}/reopen`, { method: "POST", body }),
     summary: (id: string) =>
       apiFetch<MonthlySummary>(`/financial-periods/${id}/summary`),
+    /** Sets which distribution rule this period uses. 409 if the period is
+     * CLOSED — surfaced as-is, never silently ignored (spec §5/§37). */
+    selectDistributionRule: (id: string, body: { distribution_rule_id: string }) =>
+      apiFetch<FinancialPeriod>(`/financial-periods/${id}/select-distribution-rule`, {
+        method: "POST",
+        body,
+      }),
   },
   savings: {
     get: (periodId: string) => apiFetch<SavingsSummary>(`/savings/${periodId}`),
@@ -183,9 +209,85 @@ export const api = {
     list: (query?: { is_active?: boolean; page?: number; page_size?: number }) =>
       apiFetch<Paginated<BankAccountSummary>>("/bank-accounts", { query }),
   },
+  // Read-only, server-computed per-period breakdown (Phase 5 part 3) — distinct from
+  // `distributionRules` below (CRUD rule definitions). See the `DistributionView`
+  // doc comment in lib/types.ts. Confirmed live: a period with no rule selected
+  // returns 200 with nulls/empty categories, not an error.
+  distributions: {
+    get: (periodId: string) => apiFetch<DistributionView>(`/distributions/${periodId}`),
+  },
+  // Distribution rule CRUD (Phase 3 backend, wired to the UI in Phase 5 part 3).
+  // Percentage sum-to-100 and single-unallocated-bucket invariants are enforced
+  // server-side on every create/replace — the frontend's running-total display is
+  // strictly a UX nicety, never the actual gate (CLAUDE.md).
+  distributionRules: {
+    list: (query?: { is_active?: boolean; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<DistributionRule>>("/distribution-rules", { query }),
+    create: (body: {
+      name: string;
+      description?: string | null;
+      categories: DistributionCategoryInput[];
+    }) => apiFetch<DistributionRule>("/distribution-rules", { method: "POST", body }),
+    get: (id: string) => apiFetch<DistributionRule>(`/distribution-rules/${id}`),
+    update: (
+      id: string,
+      body: {
+        name?: string;
+        description?: string | null;
+        is_active?: boolean;
+        is_default?: boolean;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<DistributionRule>(`/distribution-rules/${id}`, { method: "PATCH", body }),
+    /** Full replace of the category set — rows with an `id` update in place, rows
+     * without one are created, and any existing row not present is removed. */
+    replaceCategories: (
+      id: string,
+      body: { categories: DistributionCategoryInput[]; expected_updated_at: string },
+    ) =>
+      apiFetch<DistributionRule>(`/distribution-rules/${id}/categories`, {
+        method: "PUT",
+        body,
+      }),
+    /** Deactivates the rule (soft — never a hard delete). 409 if it's the active
+     * selection for an open period; surfaced as-is. */
+    remove: (id: string) => apiFetch<void>(`/distribution-rules/${id}`, { method: "DELETE" }),
+  },
   expenses: {
-    list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
-      apiFetch<Paginated<Expense>>("/expenses", { query }),
+    list: (query?: {
+      financial_period_id?: string;
+      distribution_category_id?: string;
+      page?: number;
+      page_size?: number;
+    }) => apiFetch<Paginated<Expense>>("/expenses", { query }),
+    create: (body: {
+      financial_period_id: string;
+      distribution_category_id?: string | null;
+      name: string;
+      expense_category: ExpenseCategory;
+      amount: string;
+      currency: string;
+      expense_date: string;
+      payment_method?: PaymentMethod | null;
+      bank_account_id?: string | null;
+      notes?: string | null;
+    }) => apiFetch<Expense>("/expenses", { method: "POST", body }),
+    update: (
+      id: string,
+      body: {
+        distribution_category_id?: string | null;
+        name?: string;
+        expense_category?: ExpenseCategory;
+        amount?: string;
+        currency?: string;
+        expense_date?: string;
+        payment_method?: PaymentMethod | null;
+        bank_account_id?: string | null;
+        notes?: string | null;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<Expense>(`/expenses/${id}`, { method: "PATCH", body }),
+    remove: (id: string) => apiFetch<void>(`/expenses/${id}`, { method: "DELETE" }),
   },
   // Money-in modules (Phase 5 part 2): salary is one-per-period (D-008 — a
   // second create for the same period returns 409 CONFLICT, surfaced as-is,

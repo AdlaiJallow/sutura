@@ -10,12 +10,14 @@
 
 import type { DistributionView, LandingPreviewSummary } from "./types";
 
-// Illustrative only — the real `/distribution` page (a later Phase 5 part) will
-// need a backend endpoint that returns this same shape computed from real
-// records; see the `DistributionView` doc comment in lib/types.ts for why that
-// endpoint doesn't exist yet.
+// Illustrative only — the real `/distribution` page fetches this same shape from
+// `GET /distributions/{period_id}` (Phase 5 part 3); see the `DistributionView`
+// doc comment in lib/types.ts.
 export const mockDistribution: DistributionView = {
   financial_period_id: "preview",
+  distribution_rule_id: "preview-rule",
+  distribution_rule_name: "50/30/20",
+  total_monthly_income: "47100.0000",
   total_allocation: "47100.0000",
   total_used: "31280.5000",
   total_remaining: "15819.5000",

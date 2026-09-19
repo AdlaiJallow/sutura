@@ -538,3 +538,39 @@ this is strictly less secure (a refresh token in `localStorage` is readable by a
 which is exactly what an httpOnly cookie is designed to prevent) and contradicts a decision already
 made deliberately in Phase 1, not something to quietly abandon because the simpler path was already
 half-built. (b) Implement the documented design properly (chosen).
+
+---
+
+### D-027 (flagged, not yet resolved): switching a period's distribution rule mid-period orphans
+expenses tied to the old rule's categories from the category-breakdown view
+
+**Context:** Found while building the `/distribution` page (Phase 5 part 3). `Expense.distribution_
+category_id` references a specific `DistributionCategory`, which belongs to a specific
+`DistributionRule`. `GET /distributions/{period_id}` (added this phase) only returns categories
+belonging to the period's *currently selected* rule. If a user selects rule A, logs expenses against
+its categories, then switches the period to rule B, those earlier expenses are still real rows with a
+real `distribution_category_id` — but that category no longer appears in the view, so their spend
+silently disappears from every category's "used" figure. `FinancialPeriodService._compute_summary`'s
+period-wide `total_expenses` is unaffected (it sums all of the period's expenses regardless of
+category), so the dashboard's top-line total stays correct — only the per-category breakdown becomes
+incomplete. This is spec edge case §38-21 ("changed distribution rule"), which the spec flags as
+needing explicit handling without prescribing what that handling is.
+
+**Not resolved yet — options on the table:**
+1. Block selecting a new rule for a period if the currently-selected rule's categories have any
+   non-deleted expenses against them (force an explicit decision before switching, mirroring how
+   `DistributionService.deactivate_rule`/`update_rule` already block deactivating a rule that's an open
+   period's active selection).
+2. On switching, null out `distribution_category_id` on the orphaned expenses (they'd then need
+   `distribution_category_id: null`, which `ExpenseService._validate_distribution_category` currently
+   only permits when *no* rule is selected at all — this option would need that rule loosened, or a
+   distinct "uncategorized under the current rule" state added).
+3. Have `GET /distributions/{period_id}` additionally report spend against categories *not* in the
+   current rule as a separate "uncategorized / prior-rule spend" line, so nothing is silently dropped
+   even though it can't be attributed to a current-rule category.
+
+**Why this isn't fixed inline:** switching rules mid-period is not itself expected to be common (a
+period normally picks one rule and uses it start to finish), and the three options above have real
+trade-offs worth deciding deliberately rather than picking one under an unrelated task, per developer
+rule 1/2 (flag ambiguity, don't invent silently). Revisit before/alongside whatever phase adds rule
+history or period-level analytics that depend on category totals being complete.
