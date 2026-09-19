@@ -107,6 +107,32 @@ def test_logout_revokes_refresh_token_and_clears_cookie(client: TestClient):
     assert reuse_resp.status_code == 401, reuse_resp.text
 
 
+def test_refresh_rejects_a_deactivated_account(client: TestClient):
+    """Found in Phase 5 review: refresh never checked is_active, so a refresh token minted
+    before DELETE /users/me could keep issuing fresh access tokens for a deactivated account
+    indefinitely. Fixed to revoke the token and reject outright, same as an expired/invalid one."""
+    email = _unique_email()
+    password = "correct-horse-1"
+    _register(client, email, password)
+    login_resp = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    access_token = login_resp.json()["access_token"]
+
+    delete_resp = client.request(
+        "DELETE",
+        "/api/v1/users/me",
+        json={"password": password},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+
+    refresh_resp = client.post("/api/v1/auth/refresh")
+    assert refresh_resp.status_code == 401, refresh_resp.text
+
+    # The refresh token is now revoked outright, not just refused once.
+    refresh_again_resp = client.post("/api/v1/auth/refresh")
+    assert refresh_again_resp.status_code == 401, refresh_again_resp.text
+
+
 def test_logout_with_no_cookie_is_a_no_op_not_an_error(client: TestClient):
     resp = client.post("/api/v1/auth/logout")
     assert resp.status_code == 204, resp.text

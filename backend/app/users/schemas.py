@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserRead(BaseModel):
@@ -22,4 +22,6 @@ class UserUpdate(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str
+    # Found in Phase 5 review: unlike RegisterRequest.password / ResetPasswordRequest.new_password,
+    # this had no length constraint at all. Matches those two exactly now.
+    new_password: str = Field(min_length=8, max_length=128)

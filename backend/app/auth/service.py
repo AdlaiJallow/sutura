@@ -105,6 +105,17 @@ class AuthService:
         if token_row.expires_at < datetime.now(timezone.utc):
             raise UnauthorizedError("Refresh token has expired.")
 
+        # Found in Phase 5 review: a still-valid refresh token minted before an account was
+        # deactivated (DELETE /users/me) could otherwise keep issuing fresh access tokens
+        # forever — every other endpoint re-checks is_active via get_current_user, but refresh
+        # itself never did. Revoke the token outright so a deactivated account can't refresh at
+        # all, matching how is_active is treated as terminal everywhere else, not transient.
+        user = self.users.get_by_id(token_row.user_id)
+        if user is None or not user.is_active:
+            self.repo.revoke_refresh_token(token_row)
+            self.db.commit()
+            raise UnauthorizedError("This account is no longer active.")
+
         access = create_access_token(token_row.user_id)
         new_raw_refresh = generate_raw_token()
         new_refresh_row = RefreshToken(
