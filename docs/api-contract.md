@@ -167,7 +167,40 @@ schemas write-only) echoing the value last read; mismatch returns `409`.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/distributions/{period_id}` | per category: `allocation, used, remaining, is_overspent`, plus period totals; all server-computed from `financial_engine.distribution_calculator`, never stored redundantly |
-| GET | `/distributions/{period_id}/categories/{category_id}/items` | paginated list of `Expense` rows for that category (the "items under this category" from §12) |
+| GET | `/distributions/{period_id}/categories/{category_id}/items` | paginated list of `Expense` rows for that category (the "items under this category" from §12) — not yet implemented |
+
+`GET /distributions/{period_id}` response shape (`DistributionViewRead`):
+
+```jsonc
+{
+  "financial_period_id": "uuid",
+  "distribution_rule_id": "uuid | null",
+  "distribution_rule_name": "string | null",
+  "total_monthly_income": "Money",   // real even when no rule is selected
+  "categories": [
+    {
+      "id": "uuid",
+      "name": "string",
+      "percentage": "Percentage",
+      "allocation": "Money",
+      "used": "Money",
+      "remaining": "Money",          // may be negative — overspend is shown, never clamped (spec §13)
+      "is_overspent": "bool",
+      "contributes_to_automatic_savings": "bool",
+      "is_unallocated_bucket": "bool"
+    }
+  ],
+  "total_allocation": "Money",
+  "total_used": "Money",
+  "total_remaining": "Money"
+}
+```
+
+A period with no distribution rule selected yet is a normal state (a brand-new period), not an
+error: this returns `200` with `distribution_rule_id`/`distribution_rule_name = null`,
+`categories = []`, and zeroed totals — never a `404` — so callers don't have to special-case a
+brand-new period. Cross-user access to another user's period returns `404` (D-020). Purely a read
+— no write, no audit entry (nothing is mutated).
 
 ## 10. Savings (`/api/v1/savings*`)
 

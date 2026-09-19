@@ -8,6 +8,7 @@ exists but belongs to another user is indistinguishable from a missing one (404)
 """
 import calendar
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -19,11 +20,7 @@ from app.audit.service import AuditService
 from app.common.errors import ConflictError, NotFoundError, ValidationAppError
 from app.distribution.models import DistributionCategory, DistributionRule
 from app.expenses.models import Expense
-from app.financial_engine.distribution_calculator import (
-    category_allocation,
-    category_remaining,
-    category_used,
-)
+from app.financial_engine.distribution_calculator import compute_category_distribution
 from app.financial_engine.income_calculator import (
     total_allowances as calc_total_allowances,
 )
@@ -38,6 +35,7 @@ from app.financial_engine.monthly_summary_calculator import (
     MonthlySummaryInputs,
     build_monthly_summary,
 )
+from app.financial_engine.rounding import quantize_money
 from app.financial_engine.savings_calculator import (
     CategoryRemainderInput,
     automatic_savings as calc_automatic_savings,
@@ -61,6 +59,49 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
     last_day = calendar.monthrange(year, month)[1]
     end = date(year, month, last_day)
     return start, end
+
+
+@dataclass(frozen=True)
+class IncomeTotals:
+    """Output of `_compute_income_totals` — the salary/allowance/other-income figures shared by
+    both `_compute_summary` (the closed-form MonthlyFinancialSummary) and `get_distribution_view`
+    (the per-category read view), so the two never run these queries/formulas independently."""
+
+    net_salary: Decimal
+    allowances_total: Decimal
+    other_income_total: Decimal
+    salary_income: Decimal
+    monthly_income: Decimal
+
+
+@dataclass(frozen=True)
+class CategoryDistributionDetail:
+    """One category's full computed detail for `GET /distributions/{period_id}` (spec §12/§26).
+    Wraps `financial_engine.distribution_calculator.compute_category_distribution` with the
+    category's own persisted metadata (name/percentage/flags) — the single place both the
+    summary's automatic-savings input and the read-only distribution view are derived from."""
+
+    id: uuid.UUID
+    name: str
+    percentage: Decimal
+    contributes_to_automatic_savings: bool
+    is_unallocated_bucket: bool
+    allocation: Decimal
+    used: Decimal
+    remaining: Decimal
+    is_overspent: bool
+
+
+@dataclass(frozen=True)
+class DistributionViewResult:
+    financial_period_id: uuid.UUID
+    distribution_rule_id: uuid.UUID | None
+    distribution_rule_name: str | None
+    total_monthly_income: Decimal
+    categories: list[CategoryDistributionDetail]
+    total_allocation: Decimal
+    total_used: Decimal
+    total_remaining: Decimal
 
 
 class FinancialPeriodService:
@@ -166,48 +207,10 @@ class FinancialPeriodService:
 
     # ------------------------------------------------------------------ summary computation
 
-    def _gather_category_remainders(
-        self, user_id: uuid.UUID, period: FinancialPeriod, total_monthly_income: Decimal
-    ) -> tuple[list[CategoryRemainderInput], Decimal]:
-        """Returns (per-category remainder inputs, total_planned_savings) where
-        total_planned_savings is the sum of allocations for categories flagged as contributing
-        to automatic savings (the budget set aside, not yet the unused remainder)."""
-        if period.distribution_rule_id is None:
-            return [], ZERO
-
-        categories = list(
-            self.db.execute(
-                select(DistributionCategory).where(
-                    DistributionCategory.distribution_rule_id == period.distribution_rule_id
-                )
-            ).scalars()
-        )
-
-        remainders: list[CategoryRemainderInput] = []
-        total_planned_savings = ZERO
-        for cat in categories:
-            used_amounts = self.db.execute(
-                select(Expense.amount).where(
-                    Expense.user_id == user_id,
-                    Expense.financial_period_id == period.id,
-                    Expense.distribution_category_id == cat.id,
-                    Expense.deleted_at.is_(None),
-                )
-            ).scalars().all()
-            allocation = category_allocation(total_monthly_income, Decimal(cat.percentage))
-            used = category_used(Decimal(a) for a in used_amounts)
-            remaining = category_remaining(allocation, used)
-            remainders.append(
-                CategoryRemainderInput(
-                    remaining=remaining,
-                    contributes_to_automatic_savings=cat.contributes_to_automatic_savings,
-                )
-            )
-            if cat.contributes_to_automatic_savings:
-                total_planned_savings += allocation
-        return remainders, total_planned_savings
-
-    def _compute_summary(self, user: User, period: FinancialPeriod) -> MonthlySummaryInputs:
+    def _compute_income_totals(self, user: User, period: FinancialPeriod) -> IncomeTotals:
+        """Net salary + allowances + other income -> Total Monthly Income (spec §26). Shared by
+        `_compute_summary` and `get_distribution_view` so both read the exact same figures from
+        the exact same queries — never re-derived independently."""
         db = self.db
 
         salary_row = db.execute(
@@ -237,6 +240,134 @@ class FinancialPeriodService:
         ).scalars().all()
         other_income_total = calc_total_other_income(Decimal(a) for a in income_amounts)
 
+        salary_income = calc_total_salary_income(net_salary, allowances_total)
+        monthly_income = calc_total_monthly_income(salary_income, other_income_total)
+
+        return IncomeTotals(
+            net_salary=net_salary,
+            allowances_total=allowances_total,
+            other_income_total=other_income_total,
+            salary_income=salary_income,
+            monthly_income=monthly_income,
+        )
+
+    def _gather_category_details(
+        self, user_id: uuid.UUID, period: FinancialPeriod, total_monthly_income: Decimal
+    ) -> list[CategoryDistributionDetail]:
+        """The one query+math implementation for per-category allocation/used/remaining
+        (spec §12/§26), routed through `financial_engine.distribution_calculator
+        .compute_category_distribution` so `is_overspent` is never computed ad hoc. Used by both
+        `_gather_category_remainders` (automatic-savings input) and `get_distribution_view`
+        (the read-only `/distributions/{period_id}` endpoint)."""
+        if period.distribution_rule_id is None:
+            return []
+
+        categories = list(
+            self.db.execute(
+                select(DistributionCategory)
+                .where(DistributionCategory.distribution_rule_id == period.distribution_rule_id)
+                .order_by(DistributionCategory.display_order, DistributionCategory.name)
+            ).scalars()
+        )
+
+        details: list[CategoryDistributionDetail] = []
+        for cat in categories:
+            used_amounts = self.db.execute(
+                select(Expense.amount).where(
+                    Expense.user_id == user_id,
+                    Expense.financial_period_id == period.id,
+                    Expense.distribution_category_id == cat.id,
+                    Expense.deleted_at.is_(None),
+                )
+            ).scalars().all()
+            result = compute_category_distribution(
+                category_id=cat.id,
+                total_monthly_income=total_monthly_income,
+                percentage=Decimal(cat.percentage),
+                item_amounts=(Decimal(a) for a in used_amounts),
+                contributes_to_automatic_savings=cat.contributes_to_automatic_savings,
+            )
+            details.append(
+                CategoryDistributionDetail(
+                    id=cat.id,
+                    name=cat.name,
+                    percentage=Decimal(cat.percentage),
+                    contributes_to_automatic_savings=cat.contributes_to_automatic_savings,
+                    is_unallocated_bucket=cat.is_unallocated_bucket,
+                    allocation=result.allocation,
+                    used=result.used,
+                    remaining=result.remaining,
+                    is_overspent=result.is_overspent,
+                )
+            )
+        return details
+
+    def _gather_category_remainders(
+        self, user_id: uuid.UUID, period: FinancialPeriod, total_monthly_income: Decimal
+    ) -> tuple[list[CategoryRemainderInput], Decimal]:
+        """Returns (per-category remainder inputs, total_planned_savings) where
+        total_planned_savings is the sum of allocations for categories flagged as contributing
+        to automatic savings (the budget set aside, not yet the unused remainder). Thin
+        derivation from `_gather_category_details` — same signature/behavior as before, but no
+        longer a second query+math implementation."""
+        details = self._gather_category_details(user_id, period, total_monthly_income)
+        remainders = [
+            CategoryRemainderInput(
+                remaining=d.remaining,
+                contributes_to_automatic_savings=d.contributes_to_automatic_savings,
+            )
+            for d in details
+        ]
+        total_planned_savings = sum(
+            (d.allocation for d in details if d.contributes_to_automatic_savings), ZERO
+        )
+        return remainders, total_planned_savings
+
+    def get_distribution_view(self, user: User, period_id: uuid.UUID) -> DistributionViewResult:
+        """Read-only computed view for `GET /distributions/{period_id}` (docs/api-contract.md
+        §9): per-category allocation/used/remaining/is_overspent plus period totals, server
+        -computed and never stored redundantly. No commit, no audit entry — this reads persisted
+        rows and derives numbers, it never mutates anything.
+
+        A period with no distribution rule selected yet is a normal state (a brand-new period),
+        not an error: this returns 200 with `distribution_rule_id/name = null`, `categories = []`
+        and zeroed totals, rather than forcing every caller to special-case a 404."""
+        period = self.get_period(user, period_id)
+        income = self._compute_income_totals(user, period)
+
+        rule_name: str | None = None
+        if period.distribution_rule_id is not None:
+            rule_name = self.db.execute(
+                select(DistributionRule.name).where(
+                    DistributionRule.id == period.distribution_rule_id
+                )
+            ).scalar_one_or_none()
+
+        categories = self._gather_category_details(user.id, period, income.monthly_income)
+        total_allocation = quantize_money(sum((c.allocation for c in categories), ZERO))
+        total_used = quantize_money(sum((c.used for c in categories), ZERO))
+        total_remaining = quantize_money(sum((c.remaining for c in categories), ZERO))
+
+        return DistributionViewResult(
+            financial_period_id=period.id,
+            distribution_rule_id=period.distribution_rule_id,
+            distribution_rule_name=rule_name,
+            total_monthly_income=income.monthly_income,
+            categories=categories,
+            total_allocation=total_allocation,
+            total_used=total_used,
+            total_remaining=total_remaining,
+        )
+
+    def _compute_summary(self, user: User, period: FinancialPeriod) -> MonthlySummaryInputs:
+        db = self.db
+
+        income = self._compute_income_totals(user, period)
+        net_salary = income.net_salary
+        allowances_total = income.allowances_total
+        other_income_total = income.other_income_total
+        monthly_income = income.monthly_income
+
         expense_amounts = db.execute(
             select(Expense.amount).where(
                 Expense.user_id == user.id,
@@ -245,9 +376,6 @@ class FinancialPeriodService:
             )
         ).scalars().all()
         expenses_total = sum((Decimal(a) for a in expense_amounts), ZERO)
-
-        salary_income = calc_total_salary_income(net_salary, allowances_total)
-        monthly_income = calc_total_monthly_income(salary_income, other_income_total)
 
         remainders, total_planned_savings = self._gather_category_remainders(
             user.id, period, monthly_income

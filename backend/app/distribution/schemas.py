@@ -102,3 +102,45 @@ class DistributionRuleRead(BaseModel):
     is_default: bool
     categories: list[DistributionCategoryRead] = []
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------------------------
+# GET /distributions/{period_id} — read-only computed view (docs/api-contract.md §9). Distinct
+# resource shape from DistributionRuleRead above (CRUD rule definition vs. a period's computed
+# amounts) despite the similar name — never confuse the two. Server-computed from
+# `financial_engine.distribution_calculator` via `FinancialPeriodService.get_distribution_view`,
+# never stored redundantly (spec §9/§27).
+
+
+class DistributionCategoryView(BaseModel):
+    """One category's computed allocation/used/remaining for a given period. `is_overspent` is
+    a visible negative `remaining`, never clamped (spec §13)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    percentage: Decimal
+    allocation: Decimal
+    used: Decimal
+    remaining: Decimal
+    is_overspent: bool
+    contributes_to_automatic_savings: bool
+    is_unallocated_bucket: bool
+
+
+class DistributionViewRead(BaseModel):
+    """A period with no distribution rule selected yet is a normal state, not an error: this
+    comes back as 200 with `distribution_rule_id`/`distribution_rule_name = null`,
+    `categories = []` and zeroed totals — `total_monthly_income` is still the real figure."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    financial_period_id: uuid.UUID
+    distribution_rule_id: uuid.UUID | None
+    distribution_rule_name: str | None
+    total_monthly_income: Decimal
+    categories: list[DistributionCategoryView]
+    total_allocation: Decimal
+    total_used: Decimal
+    total_remaining: Decimal

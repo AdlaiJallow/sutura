@@ -21,6 +21,7 @@ from app.common.errors import (
     validation_exception_handler,
 )
 from app.common.logging import configure_logging
+from app.distribution.distributions_router import router as distributions_router
 from app.distribution.router import router as distribution_router
 from app.expenses.router import router as expenses_router
 from app.financial_periods.router import router as financial_periods_router
@@ -73,6 +74,7 @@ routers = [
     income_router,
     expenses_router,
     distribution_router,
+    distributions_router,
     savings_router,
     banks_router,
     transactions_router,
