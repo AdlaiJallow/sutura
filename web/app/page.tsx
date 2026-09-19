@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { AmountDisplay } from "@/components/finance/amount-display";
 import { CategoryProgressBar } from "@/components/finance/category-progress-bar";
-import { mockDistribution, mockPeriodSummary } from "@/lib/mock-data";
+import { mockDistribution, mockLandingPreviewSummary } from "@/lib/mock-data";
 
 // Anonymous entry point. Once auth sessions exist (Phase 3), this becomes a
 // server-side redirect — authenticated -> /dashboard, unauthenticated ->
@@ -68,7 +68,7 @@ export default function LandingPage() {
               September 2026 &middot; Money Available
             </p>
             <AmountDisplay
-              value={mockPeriodSummary.income.total_monthly_income}
+              value={mockLandingPreviewSummary.income.total_monthly_income}
               size="xl"
               weight="semibold"
               className="mt-1"

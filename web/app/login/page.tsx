@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
 interface FormErrors {
   email?: string;
@@ -21,6 +22,7 @@ function validateEmail(email: string) {
 
 export default function LoginPage() {
   const router = useRouter();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
@@ -42,8 +44,8 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
-      const { data } = await api.auth.login({ email, password });
-      window.localStorage.setItem("sutura_access_token", data.access_token);
+      const tokens = await api.auth.login({ email, password });
+      await login(tokens.access_token);
       router.push("/dashboard");
     } catch (err) {
       const message =

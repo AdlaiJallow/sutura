@@ -20,11 +20,6 @@ export interface Paginated<T> {
   meta: PageMeta;
 }
 
-export interface ApiEnvelope<T> {
-  data: T;
-  meta?: Record<string, unknown>;
-}
-
 export interface FieldError {
   field: string;
   message: string;
@@ -42,7 +37,6 @@ export type PeriodStatus = "OPEN" | "CLOSED";
 
 export interface FinancialPeriod {
   id: string;
-  user_id: string;
   year: number;
   month: number;
   start_date: ISODate;
@@ -51,10 +45,19 @@ export interface FinancialPeriod {
   distribution_rule_id: string | null;
   base_currency: string;
   closed_at: ISODateTime | null;
+  closed_by: string | null;
   reopened_count: number;
   last_reopened_at: ISODateTime | null;
 }
 
+// NOTE: as of Phase 5 part 1, the backend has no `GET /distributions/{period_id}`
+// (or equivalent) endpoint that returns per-category allocation/used/remaining for
+// a period — only `/distribution-rules` CRUD (name + percentage only, no computed
+// amounts). `DistributionView`/`DistributionCategorySummary` describe the shape such
+// an endpoint would need to return (and what `CategoryProgressBar` already renders),
+// kept here for the landing page's illustrative preview and for the real `/distribution`
+// page once that backend endpoint exists. Flagged rather than invented — see the
+// Phase 5 part 1 handback notes: this is a real gap, not a client-side shortcut.
 export interface DistributionCategorySummary {
   id: string;
   name: string;
@@ -75,53 +78,66 @@ export interface DistributionView {
   total_remaining: Money;
 }
 
+// GET /savings/{period_id} — the live, source-of-truth savings rollup (D-012).
 export interface SavingsSummary {
   financial_period_id: string;
-  planned_savings: Money;
-  automatic_savings: Money;
-  manual_savings: Money;
-  final_savings: Money;
-  distributed_savings: Money;
-  undistributed_savings: Money;
+  automatic_savings_computed: Money;
+  manual_savings_total: Money;
+  final_savings_total: Money;
+  distributed_total: Money;
+  /** May be negative — a shortfall is shown, never clamped (D-023). */
+  undistributed_total: Money;
+  last_calculated_at: ISODateTime | null;
 }
 
+// GET /bank-accounts, GET /bank-accounts/{id} — BankAccountRead.
 export interface BankAccountSummary {
   id: string;
   account_name: string;
   institution_name: string | null;
-  account_type: string;
-  account_identifier_last4: string;
+  account_type: string | null;
+  /** Null when no identifier was ever recorded — never the full number (D-034/D-015 masking). */
+  account_identifier_last4: string | null;
   currency: string;
+  opening_balance: Money;
   current_balance: Money;
   is_active: boolean;
-  deposits_this_period?: Money;
-  savings_allocated_this_period?: Money;
+  updated_at: ISODateTime;
 }
 
-export interface PeriodSummary {
+// GET /financial-periods/{id}/summary — MonthlySummaryRead. This is the cached
+// `MonthlyFinancialSummary` row (D-004): live-recalculated ("MANUAL_REFRESH") while
+// the period is OPEN, frozen at whatever it was when the period was last closed
+// otherwise. Deliberately flat, matching the backend exactly — no nested
+// income/distribution/spending breakdown exists at this endpoint (see the
+// DistributionView note above for the gap that leaves).
+export interface MonthlySummary {
+  id: string;
   financial_period_id: string;
+  version: number;
+  is_current: boolean;
+  total_salary_income: Money;
+  total_allowances: Money;
+  total_other_income: Money;
+  total_monthly_income: Money;
+  total_expenses: Money;
+  total_planned_savings: Money;
+  automatic_savings: Money;
+  manual_savings: Money;
+  final_savings: Money;
+  total_bank_deposits: Money;
+  undistributed_savings: Money;
+  triggered_by: string;
+  calculated_at: ISODateTime;
+}
+
+// Illustrative fixture shape for the anonymous landing page's ledger preview only
+// (app/page.tsx) — not backed by any real endpoint, never fetched, never shown to a
+// signed-in user. Kept separate from `MonthlySummary` (the real endpoint's shape) so
+// the two are never confused.
+export interface LandingPreviewSummary {
   income: {
-    net_salary: Money;
-    total_allowances: Money;
-    other_income: Money;
     total_monthly_income: Money;
-  };
-  distribution: {
-    needs_allocation: Money;
-    savings_allocation: Money;
-    wants_allocation: Money;
-    custom_categories: { name: string; allocation: Money }[];
-  };
-  spending: {
-    total_expenses: Money;
-    spending_by_category: { category: string; amount: Money }[];
-    planned_vs_actual: { planned: Money; actual: Money };
-  };
-  savings: SavingsSummary;
-  accounts: {
-    total_balance: Money;
-    total_deposits_this_period: Money;
-    total_savings_allocated: Money;
   };
 }
 
@@ -143,34 +159,44 @@ export type ExpenseCategory =
 
 export type PaymentMethod = "CASH" | "BANK_TRANSFER" | "CARD" | "MOBILE_MONEY" | "OTHER";
 
-// POST /auth/login
+// POST /auth/register — RegisterResponse. Registration does not log the user in;
+// they verify their email, then sign in separately.
+export interface RegisterResult {
+  id: string;
+  email: string;
+  is_email_verified: boolean;
+}
+
+// POST /auth/login, POST /auth/refresh (D-026). The refresh token never appears here —
+// it travels only via the httpOnly `refresh_token` cookie.
 export interface AuthTokens {
   access_token: string;
   token_type: string;
 }
 
-// GET /users/me — profile, default currency, MFA status.
+// GET /users/me — UserRead.
 export interface UserProfile {
   id: string;
-  full_name: string;
   email: string;
+  full_name: string | null;
   default_currency: string;
+  is_email_verified: boolean;
   mfa_enabled: boolean;
-  email_verified: boolean;
+  is_active: boolean;
 }
 
+// GET /expenses, GET /expenses/{id} — ExpenseRead.
 export interface Expense {
   id: string;
   financial_period_id: string;
   distribution_category_id: string | null;
-  distribution_category_name?: string;
   name: string;
-  expense_category: ExpenseCategory;
+  expense_category: ExpenseCategory | string;
   amount: Money;
   currency: string;
   expense_date: ISODate;
-  payment_method: PaymentMethod | null;
+  payment_method: PaymentMethod | string | null;
   bank_account_id: string | null;
   notes: string | null;
-  is_recurring: boolean;
+  updated_at: ISODateTime;
 }

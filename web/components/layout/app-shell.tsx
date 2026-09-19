@@ -1,10 +1,14 @@
+"use client";
+
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useState, type ReactNode } from "react";
+import { LogOutIcon } from "lucide-react";
 import { Logo } from "@/components/brand/logo";
 import { PeriodProvider } from "./period-context";
 import { PeriodSelector } from "./period-selector";
 import { WorkflowNav } from "./workflow-nav";
-import { mockUser } from "@/lib/mock-data";
+import { useAuth } from "@/lib/auth-context";
 
 function initials(name: string) {
   return name
@@ -24,6 +28,18 @@ function initials(name: string) {
  * "rethink navigation... consider tabs... top navigation").
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+  const [signingOut, setSigningOut] = useState(false);
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    await logout();
+    router.push("/login");
+  }
+
+  const displayName = user?.full_name ?? user?.email ?? null;
+
   return (
     <PeriodProvider>
       <div className="flex min-h-full flex-col">
@@ -39,11 +55,21 @@ export function AppShell({ children }: { children: ReactNode }) {
               <PeriodSelector />
               <Link
                 href="/settings"
-                title={mockUser.full_name}
+                title={displayName ?? "Your account"}
                 className="figure flex size-8 shrink-0 items-center justify-center rounded-full bg-rust-100 text-xs font-semibold text-rust-700 transition-colors duration-250 ease-ledger hover:bg-rust-300"
               >
-                {initials(mockUser.full_name)}
+                {displayName ? initials(displayName) : "…"}
               </Link>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                disabled={signingOut}
+                title="Sign out"
+                aria-label="Sign out"
+                className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors duration-250 ease-ledger hover:bg-secondary hover:text-ink disabled:opacity-50"
+              >
+                <LogOutIcon className="size-4" aria-hidden />
+              </button>
             </div>
           </div>
           <div className="mx-auto max-w-6xl px-4 sm:px-6">

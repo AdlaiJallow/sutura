@@ -1,23 +1,29 @@
 import Link from "next/link";
 import { AmountDisplay } from "@/components/finance/amount-display";
 import { StatusBadge } from "@/components/finance/status-badge";
-import { CategoryProgressBar } from "@/components/finance/category-progress-bar";
-import { SpendingByCategoryChart } from "@/components/finance/spending-by-category-chart";
 import { ZeroIncomeEmptyState } from "@/components/finance/zero-income-empty-state";
 import { isZero } from "@/lib/money";
 import { monthLabel } from "@/lib/text";
-import type { BankAccountSummary, DistributionView, FinancialPeriod, PeriodSummary } from "@/lib/types";
+import type { BankAccountSummary, FinancialPeriod, MonthlySummary, SavingsSummary } from "@/lib/types";
 
 export interface DashboardViewProps {
   period: FinancialPeriod;
-  summary: PeriodSummary;
-  distribution: DistributionView;
+  summary: MonthlySummary;
+  savings: SavingsSummary;
   accounts: BankAccountSummary[];
 }
 
-export function DashboardView({ period, summary, distribution, accounts }: DashboardViewProps) {
+/**
+ * NOTE on scope (Phase 5 part 1): `GET /financial-periods/{id}/summary` returns a
+ * flat cache row (income + expense + savings totals only) — there is currently no
+ * backend endpoint for per-category allocation/used/remaining or spending-by-category
+ * breakdowns (see the `DistributionView` doc comment in lib/types.ts). Those sections
+ * come back once that endpoint exists; this view only renders numbers the backend
+ * actually returns today.
+ */
+export function DashboardView({ period, summary, savings, accounts }: DashboardViewProps) {
   const currency = period.base_currency;
-  const hasIncome = !isZero(summary.income.total_monthly_income);
+  const hasIncome = !isZero(summary.total_monthly_income);
   const label = monthLabel(period.year, period.month);
 
   return (
@@ -31,14 +37,14 @@ export function DashboardView({ period, summary, distribution, accounts }: Dashb
         </div>
         <h1 className="mt-2 font-display text-4xl text-ink md:text-5xl">Money Available</h1>
         <AmountDisplay
-          value={summary.income.total_monthly_income}
+          value={summary.total_monthly_income}
           currency={currency}
           size="xl"
           weight="semibold"
           className="mt-1"
         />
         <p className="mt-2 max-w-md text-sm text-ink-soft">
-          Your total income for {label} — net salary, allowances, and everything else that came in.
+          Your total income for {label} — salary, allowances, and everything else that came in.
         </p>
       </section>
 
@@ -50,84 +56,102 @@ export function DashboardView({ period, summary, distribution, accounts }: Dashb
           <section>
             <h2 className="font-display text-xl text-ink">Where it came from</h2>
             <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4">
-              <Stat label="Net Salary" value={summary.income.net_salary} currency={currency} />
-              <Stat label="Allowances" value={summary.income.total_allowances} currency={currency} />
-              <Stat label="Other Income" value={summary.income.other_income} currency={currency} />
+              <Stat
+                label="Salary & Allowances"
+                value={summary.total_salary_income}
+                currency={currency}
+              />
+              <Stat label="Of Which, Allowances" value={summary.total_allowances} currency={currency} />
+              <Stat label="Other Income" value={summary.total_other_income} currency={currency} />
               <Stat
                 label="Total Monthly Income"
-                value={summary.income.total_monthly_income}
+                value={summary.total_monthly_income}
                 currency={currency}
                 emphasize
               />
             </div>
           </section>
 
-          {/* Distribution / allocation */}
+          {/* Spending & plan */}
           <section>
-            <div className="flex items-baseline justify-between gap-3">
-              <h2 className="font-display text-xl text-ink">Planned vs. Spent by Category</h2>
-              <Link
-                href="/distribution"
-                className="text-sm font-medium text-rust-500 transition-colors duration-250 ease-ledger hover:text-rust-700"
-              >
-                Manage distribution &rarr;
+            <h2 className="font-display text-xl text-ink">Spending & Plan</h2>
+            <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-3">
+              <Stat label="Spent So Far" value={summary.total_expenses} currency={currency} />
+              <Stat label="Planned Savings" value={summary.total_planned_savings} currency={currency} />
+              <Stat
+                label="Sent to Bank Accounts"
+                value={summary.total_bank_deposits}
+                currency={currency}
+              />
+            </div>
+            <p className="mt-3 text-xs text-ink-faint">
+              A category-by-category breakdown of planned vs. spent is coming once
+              distribution rules are set up (see{" "}
+              <Link href="/distribution" className="font-medium text-rust-500 hover:text-rust-700">
+                Distribution
               </Link>
-            </div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              {distribution.categories.map((category) => (
-                <CategoryProgressBar key={category.id} category={category} currency={currency} />
-              ))}
-            </div>
+              ).
+            </p>
           </section>
 
-          {/* Spending vs planned + category chart */}
-          <section className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-            <SpendingByCategoryChart data={summary.spending.spending_by_category} currency={currency} />
-            <div className="rounded-md border border-line bg-card p-4 sm:p-5">
-              <h3 className="font-display text-lg text-ink">Planned vs. Actual</h3>
-              <p className="text-sm text-ink-soft">Total spending across every category</p>
-              <dl className="mt-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <dt className="text-sm text-ink-soft">Planned</dt>
-                  <dd>
-                    <AmountDisplay value={summary.spending.planned_vs_actual.planned} currency={currency} size="sm" />
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-sm text-ink-soft">Actual</dt>
-                  <dd>
-                    <AmountDisplay value={summary.spending.planned_vs_actual.actual} currency={currency} size="sm" />
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          </section>
-
-          {/* Savings */}
+          {/* Savings — from the live `/savings/{period}` rollup, not the period-close
+              snapshot, so it reflects the most recent expense/manual-savings edits. */}
           <section>
             <h2 className="font-display text-xl text-ink">Saved</h2>
             <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4">
-              <Stat label="Saved Automatically" value={summary.savings.automatic_savings} currency={currency} tone="positive" />
-              <Stat label="Saved Manually" value={summary.savings.manual_savings} currency={currency} tone="positive" />
-              <Stat label="Total Saved" value={summary.savings.final_savings} currency={currency} tone="positive" emphasize />
-              <Stat label="Sent to Accounts" value={summary.savings.distributed_savings} currency={currency} />
+              <Stat
+                label="Saved Automatically"
+                value={savings.automatic_savings_computed}
+                currency={currency}
+                tone="positive"
+              />
+              <Stat
+                label="Saved Manually"
+                value={savings.manual_savings_total}
+                currency={currency}
+                tone="positive"
+              />
+              <Stat
+                label="Total Saved"
+                value={savings.final_savings_total}
+                currency={currency}
+                tone="positive"
+                emphasize
+              />
+              <Stat label="Sent to Accounts" value={savings.distributed_total} currency={currency} />
             </div>
-            {!isZero(summary.savings.undistributed_savings) && (
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-saved-bg bg-saved-bg px-4 py-3">
-                <p className="text-sm text-ink">
-                  <span className="font-semibold text-saved">
-                    <AmountDisplay value={summary.savings.undistributed_savings} currency={currency} size="sm" tone="neutral" />
-                  </span>{" "}
-                  hasn&apos;t been sent to an account or savings goal yet.
-                </p>
-                <Link
-                  href="/savings"
-                  className="text-sm font-semibold text-rust-500 transition-colors duration-250 ease-ledger hover:text-rust-700"
-                >
-                  Assign it &rarr;
-                </Link>
-              </div>
-            )}
+            {!isZero(savings.undistributed_total) &&
+              (() => {
+                const shortfall = savingsIsShortfall(savings.undistributed_total);
+                return (
+                  <div
+                    className={
+                      "mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3 " +
+                      (shortfall ? "border-overspent-bg bg-overspent-bg/40" : "border-saved-bg bg-saved-bg")
+                    }
+                  >
+                    <p className="text-sm text-ink">
+                      <span className="font-semibold">
+                        <AmountDisplay
+                          value={savings.undistributed_total}
+                          currency={currency}
+                          size="sm"
+                          tone="auto"
+                        />
+                      </span>{" "}
+                      {shortfall
+                        ? "more has been sent to accounts than your current savings cover — check your recent allocations."
+                        : "hasn't been sent to an account or savings goal yet."}
+                    </p>
+                    <Link
+                      href="/savings"
+                      className="text-sm font-semibold text-rust-500 transition-colors duration-250 ease-ledger hover:text-rust-700"
+                    >
+                      {shortfall ? "Review savings" : "Assign it"} &rarr;
+                    </Link>
+                  </div>
+                );
+              })()}
           </section>
         </>
       )}
@@ -151,7 +175,10 @@ export function DashboardView({ period, summary, distribution, accounts }: Dashb
               <div key={account.id} className="rounded-md border border-line bg-card p-4">
                 <p className="font-display text-base text-ink">{account.account_name}</p>
                 <p className="text-xs text-ink-faint">
-                  {account.institution_name} &middot; &bull;&bull;&bull;&bull; {account.account_identifier_last4}
+                  {account.institution_name ?? "No institution on file"}
+                  {account.account_identifier_last4
+                    ? ` · •••• ${account.account_identifier_last4}`
+                    : ""}
                 </p>
                 <AmountDisplay value={account.current_balance} currency={account.currency} size="lg" className="mt-2" />
                 <p className="mt-1 text-xs text-ink-faint">Current balance</p>
@@ -162,6 +189,10 @@ export function DashboardView({ period, summary, distribution, accounts }: Dashb
       </section>
     </div>
   );
+}
+
+function savingsIsShortfall(value: string): boolean {
+  return Number(value) < 0;
 }
 
 function Stat({

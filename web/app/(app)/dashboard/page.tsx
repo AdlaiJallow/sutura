@@ -1,35 +1,59 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import { DashboardView } from "./dashboard-view";
-import {
-  mockBankAccounts,
-  mockCurrentPeriod,
-  mockDistribution,
-  mockPeriodSummary,
-  mockZeroDistribution,
-  mockZeroIncomePeriodSummary,
-} from "@/lib/mock-data";
+import { DashboardLoadingSkeleton } from "./loading-skeleton";
+import { ErrorState } from "@/components/layout/error-state";
+import { usePeriod } from "@/components/layout/period-context";
+import { api, ApiError } from "@/lib/api";
+import type { BankAccountSummary, MonthlySummary, SavingsSummary } from "@/lib/types";
 
-// Spec §21: income, distribution, spending-vs-planned, savings, and account
-// balances in one view, all straight from `GET /financial-periods/{id}/summary`,
-// `GET /distributions/{period_id}`, and `GET /bank-accounts` once Phase 3 wires
-// the real API in — this page swaps the mock fixtures below for those calls
-// without touching DashboardView's props.
-//
-// `?empty=1` demonstrates the zero-income edge case (spec §38) against the
-// same layout, for local verification without a backend.
-export default async function DashboardPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
-  const params = await searchParams;
-  const isZeroDemo = params.empty === "1";
+// Spec §21: income, spending, and savings totals, all straight from
+// `GET /financial-periods/{id}/summary`, `GET /savings/{period_id}`, and
+// `GET /bank-accounts` (Phase 5 part 1). A client component, not a server one:
+// the access token lives only in an in-memory JS variable (D-026), which a
+// server component has no way to read.
+export default function DashboardPage() {
+  const { period } = usePeriod();
+  const [summary, setSummary] = useState<MonthlySummary | null>(null);
+  const [savings, setSavings] = useState<SavingsSummary | null>(null);
+  const [accounts, setAccounts] = useState<BankAccountSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  return (
-    <DashboardView
-      period={mockCurrentPeriod}
-      summary={isZeroDemo ? mockZeroIncomePeriodSummary : mockPeriodSummary}
-      distribution={isZeroDemo ? mockZeroDistribution : mockDistribution}
-      accounts={isZeroDemo ? [] : mockBankAccounts}
-    />
-  );
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [summaryRes, savingsRes, accountsRes] = await Promise.all([
+        api.financialPeriods.summary(period.id),
+        api.savings.get(period.id),
+        api.bankAccounts.list({ page_size: 100 }),
+      ]);
+      setSummary(summaryRes);
+      setSavings(savingsRes);
+      setAccounts(accountsRes.data);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Something went wrong loading this month's numbers. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [period.id]);
+
+  useEffect(() => {
+    void (async () => {
+      await load();
+    })();
+  }, [load]);
+
+  if (loading) return <DashboardLoadingSkeleton />;
+  if (error || !summary || !savings || !accounts) {
+    return <ErrorState message={error ?? undefined} onRetry={load} />;
+  }
+
+  return <DashboardView period={period} summary={summary} savings={savings} accounts={accounts} />;
 }
