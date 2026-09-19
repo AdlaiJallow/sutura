@@ -185,6 +185,59 @@ export interface UserProfile {
   is_active: boolean;
 }
 
+// GET /salaries, GET /salaries/{id} — SalaryRead. Exactly one per financial
+// period (D-008); a second POST for the same period returns 409 CONFLICT.
+export type SalaryStatus = "EXPECTED" | "RECEIVED";
+
+export interface Salary {
+  id: string;
+  financial_period_id: string;
+  net_amount: Money;
+  currency: string;
+  status: SalaryStatus;
+  notes: string | null;
+  is_recurring_generated: boolean;
+  updated_at: ISODateTime;
+}
+
+// GET /allowances, GET /allowances/{id} — AllowanceRead. Unlimited entries per
+// period (spec §7).
+export interface Allowance {
+  id: string;
+  financial_period_id: string;
+  name: string;
+  amount: Money;
+  currency: string;
+  is_recurring: boolean;
+  date_received: ISODate;
+  notes: string | null;
+  updated_at: ISODateTime;
+}
+
+// GET /income, GET /income/{id} — IncomeRead. Deliberately excludes
+// salary/allowance income types (D-007). Unlimited entries per period (spec §8).
+export type IncomeType =
+  | "IN_COUNTRY_PAYMENT"
+  | "PER_DIEM"
+  | "FREELANCE"
+  | "BUSINESS"
+  | "INVESTMENT"
+  | "OTHER";
+
+export interface IncomeRecord {
+  id: string;
+  financial_period_id: string;
+  income_type: IncomeType;
+  description: string;
+  amount: Money;
+  currency: string;
+  date_received: ISODate;
+  source: string | null;
+  is_recurring: boolean;
+  notes: string | null;
+  updated_at: ISODateTime;
+}
+
 // GET /expenses, GET /expenses/{id} — ExpenseRead.
 export interface Expense {
   id: string;

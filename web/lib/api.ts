@@ -127,13 +127,18 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 // ---------------------------------------------------------------------------
 
 import type {
+  Allowance,
   AuthTokens,
   BankAccountSummary,
   Expense,
   FinancialPeriod,
+  IncomeRecord,
+  IncomeType,
   MonthlySummary,
   Paginated,
   RegisterResult,
+  Salary,
+  SalaryStatus,
   SavingsSummary,
   UserProfile,
 } from "./types";
@@ -181,5 +186,91 @@ export const api = {
   expenses: {
     list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
       apiFetch<Paginated<Expense>>("/expenses", { query }),
+  },
+  // Money-in modules (Phase 5 part 2): salary is one-per-period (D-008 — a
+  // second create for the same period returns 409 CONFLICT, surfaced as-is,
+  // never swallowed); allowances and income are unlimited per-period lists
+  // (spec §7/§8). All three send Decimal amounts as raw strings the user typed
+  // (never `Number(...)`-round-tripped) so precision is never touched by the
+  // frontend — see lib/money.ts. Updates carry `expected_updated_at` — the
+  // `updated_at` this tab last read for that record — as a body field per
+  // D-018; a stale value is rejected with 409, not silently applied.
+  salaries: {
+    list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<Salary>>("/salaries", { query }),
+    create: (body: {
+      financial_period_id: string;
+      net_amount: string;
+      currency: string;
+      status?: SalaryStatus;
+      notes?: string | null;
+    }) => apiFetch<Salary>("/salaries", { method: "POST", body }),
+    update: (
+      id: string,
+      body: {
+        net_amount?: string;
+        currency?: string;
+        status?: SalaryStatus;
+        notes?: string | null;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<Salary>(`/salaries/${id}`, { method: "PATCH", body }),
+    remove: (id: string) => apiFetch<void>(`/salaries/${id}`, { method: "DELETE" }),
+  },
+  allowances: {
+    list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<Allowance>>("/allowances", { query }),
+    create: (body: {
+      financial_period_id: string;
+      name: string;
+      amount: string;
+      currency: string;
+      is_recurring?: boolean;
+      date_received: string;
+      notes?: string | null;
+    }) => apiFetch<Allowance>("/allowances", { method: "POST", body }),
+    update: (
+      id: string,
+      body: {
+        name?: string;
+        amount?: string;
+        currency?: string;
+        is_recurring?: boolean;
+        date_received?: string;
+        notes?: string | null;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<Allowance>(`/allowances/${id}`, { method: "PATCH", body }),
+    remove: (id: string) => apiFetch<void>(`/allowances/${id}`, { method: "DELETE" }),
+  },
+  income: {
+    list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<IncomeRecord>>("/income", { query }),
+    create: (body: {
+      financial_period_id: string;
+      income_type: IncomeType;
+      description: string;
+      amount: string;
+      currency: string;
+      date_received: string;
+      source?: string | null;
+      is_recurring?: boolean;
+      notes?: string | null;
+    }) => apiFetch<IncomeRecord>("/income", { method: "POST", body }),
+    update: (
+      id: string,
+      body: {
+        income_type?: IncomeType;
+        description?: string;
+        amount?: string;
+        currency?: string;
+        date_received?: string;
+        source?: string | null;
+        is_recurring?: boolean;
+        notes?: string | null;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<IncomeRecord>(`/income/${id}`, { method: "PATCH", body }),
+    remove: (id: string) => apiFetch<void>(`/income/${id}`, { method: "DELETE" }),
   },
 };
