@@ -9,7 +9,10 @@ export type FinanceStatus =
   | "RECURRING"
   | "MODIFIED"
   | "UNALLOCATED"
-  | "AUTO";
+  | "AUTO"
+  | "MANUAL"
+  | "ACTIVE"
+  | "INACTIVE";
 
 const STATUS_CONFIG: Record<FinanceStatus, { label: string; className: string }> = {
   OPEN: { label: "Open", className: "bg-planned-bg text-planned" },
@@ -21,6 +24,9 @@ const STATUS_CONFIG: Record<FinanceStatus, { label: string; className: string }>
   MODIFIED: { label: "Modified since close", className: "bg-overspent-bg text-overspent" },
   UNALLOCATED: { label: "Unallocated", className: "bg-secondary text-ink-soft" },
   AUTO: { label: "Auto", className: "bg-planned-bg text-planned" },
+  MANUAL: { label: "Manual", className: "bg-secondary text-ink-soft" },
+  ACTIVE: { label: "Active", className: "bg-ontrack-bg text-ontrack" },
+  INACTIVE: { label: "Inactive", className: "bg-secondary text-ink-faint" },
 };
 
 export interface StatusBadgeProps {

@@ -130,6 +130,10 @@ import type {
   Allowance,
   AuthTokens,
   BankAccountSummary,
+  BankAccountType,
+  BankTransaction,
+  BankTransactionType,
+  BankTransferResult,
   DistributionRule,
   DistributionView,
   Expense,
@@ -143,9 +147,25 @@ import type {
   RegisterResult,
   Salary,
   SalaryStatus,
+  SavingsAllocation,
+  SavingsDistributionRule,
+  SavingsItem,
   SavingsSummary,
   UserProfile,
 } from "./types";
+
+/** Shared shape for a savings-distribution-rule item, whether creating a rule
+ * (`POST /savings-distribution-rules`) or replacing its items (`PUT
+ * /savings-distribution-rules/{id}/items`, where `id` marks an existing row to
+ * update in place — omitted for a new one). Exactly one of `bank_account_id` /
+ * `destination_label` must be set, mirroring the backend's `_require_destination`
+ * validator — enforced server-side, this type just shapes the payload. */
+export interface SavingsDistributionRuleItemInput {
+  id?: string;
+  bank_account_id?: string | null;
+  destination_label?: string | null;
+  percentage: string;
+}
 
 /** Shared shape for a distribution category row sent to the backend, whether
  * creating a rule (`POST /distribution-rules`) or replacing its categories
@@ -205,9 +225,147 @@ export const api = {
   savings: {
     get: (periodId: string) => apiFetch<SavingsSummary>(`/savings/${periodId}`),
   },
+  // Manual, period-scoped savings entries (Phase 5 part 4) — a plain `MoneyInManager` shape,
+  // same as allowances/income. NOTE (confirmed live): creating/updating/deleting one of these
+  // does NOT synchronously refresh the `/savings/{period_id}` rollup — that cache row is only
+  // recalculated the next time `GET /financial-periods/{id}/summary` runs. `lib/use-savings-summary.ts`
+  // calls that first so the rollup shown on this page is never stale by a request.
+  savingsItems: {
+    list: (query?: { financial_period_id?: string; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<SavingsItem>>("/savings-items", { query }),
+    create: (body: {
+      financial_period_id: string;
+      name: string;
+      amount: string;
+      currency: string;
+      date: string;
+      destination?: string | null;
+      notes?: string | null;
+    }) => apiFetch<SavingsItem>("/savings-items", { method: "POST", body }),
+    update: (
+      id: string,
+      body: {
+        name?: string;
+        amount?: string;
+        currency?: string;
+        date?: string;
+        destination?: string | null;
+        notes?: string | null;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<SavingsItem>(`/savings-items/${id}`, { method: "PATCH", body }),
+    remove: (id: string) => apiFetch<void>(`/savings-items/${id}`, { method: "DELETE" }),
+  },
+  // Savings distribution rule CRUD (D-013) — the savings-side analogue of `distributionRules`
+  // above: a reusable name + sum-to-100 item list, each item pointing at a real bank account
+  // or a free-text destination.
+  savingsDistributionRules: {
+    list: (query?: { is_active?: boolean; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<SavingsDistributionRule>>("/savings-distribution-rules", { query }),
+    create: (body: { name: string; items: SavingsDistributionRuleItemInput[] }) =>
+      apiFetch<SavingsDistributionRule>("/savings-distribution-rules", { method: "POST", body }),
+    get: (id: string) => apiFetch<SavingsDistributionRule>(`/savings-distribution-rules/${id}`),
+    update: (
+      id: string,
+      body: { name?: string; is_active?: boolean; is_default?: boolean; expected_updated_at: string },
+    ) =>
+      apiFetch<SavingsDistributionRule>(`/savings-distribution-rules/${id}`, {
+        method: "PATCH",
+        body,
+      }),
+    /** Full replace of the item set — same upsert-by-id/remove-if-missing convention as
+     * `distributionRules.replaceCategories`. */
+    replaceItems: (
+      id: string,
+      body: { items: SavingsDistributionRuleItemInput[]; expected_updated_at: string },
+    ) =>
+      apiFetch<SavingsDistributionRule>(`/savings-distribution-rules/${id}/items`, {
+        method: "PUT",
+        body,
+      }),
+  },
+  // Where saved money is actually sent (D-014, §19/§20). `create` is the manual path; `applyRule`
+  // regenerates the full AUTO set for a period from a rule and never stacks with a previous
+  // apply (confirmed live). Deleting an individual AUTO row is rejected server-side (422) — the
+  // UI never offers a delete action for one.
+  savingsAllocations: {
+    list: (query: { financial_period_id: string; allocation_method?: string; page?: number; page_size?: number }) =>
+      apiFetch<Paginated<SavingsAllocation>>("/savings-allocations", { query }),
+    create: (body: {
+      financial_period_id: string;
+      bank_account_id?: string | null;
+      destination_label?: string | null;
+      amount: string;
+      transaction_date?: string | null;
+    }) => apiFetch<SavingsAllocation>("/savings-allocations", { method: "POST", body }),
+    applyRule: (body: { financial_period_id: string; savings_distribution_rule_id: string }) =>
+      apiFetch<SavingsAllocation[]>("/savings-allocations/apply-rule", { method: "POST", body }),
+    remove: (id: string) => apiFetch<void>(`/savings-allocations/${id}`, { method: "DELETE" }),
+  },
   bankAccounts: {
     list: (query?: { is_active?: boolean; page?: number; page_size?: number }) =>
       apiFetch<Paginated<BankAccountSummary>>("/bank-accounts", { query }),
+    create: (body: {
+      account_name: string;
+      institution_name?: string | null;
+      account_type?: BankAccountType | null;
+      account_identifier?: string | null;
+      currency?: string;
+      opening_balance?: string;
+    }) => apiFetch<BankAccountSummary>("/bank-accounts", { method: "POST", body }),
+    get: (id: string) => apiFetch<BankAccountSummary>(`/bank-accounts/${id}`),
+    /** Also used to reactivate a deactivated account (`is_active: true`) — see
+     * BankAccountUpdate on the backend. `account_identifier`, if supplied, is re-derived into
+     * a new `account_identifier_last4` and the raw value is never echoed back or displayed
+     * again — never pre-fill this field from an existing account when editing. */
+    update: (
+      id: string,
+      body: {
+        account_name?: string;
+        institution_name?: string | null;
+        account_type?: BankAccountType | null;
+        account_identifier?: string | null;
+        notes?: string | null;
+        is_active?: boolean;
+        expected_updated_at: string;
+      },
+    ) => apiFetch<BankAccountSummary>(`/bank-accounts/${id}`, { method: "PATCH", body }),
+    /** Soft-deactivates only — never a hard delete (accounts and their transaction history
+     * persist). Reverse with `update(id, { is_active: true, ... })`. */
+    deactivate: (id: string) => apiFetch<void>(`/bank-accounts/${id}`, { method: "DELETE" }),
+  },
+  // A period-scoped, append-only ledger view (Phase 5 part 4). `create` covers
+  // DEPOSIT/WITHDRAWAL/ADJUSTMENT only — TRANSFER_IN/TRANSFER_OUT are system-generated by
+  // `transfer` alone, confirmed live never directly postable via `create`.
+  bankTransactions: {
+    list: (query?: {
+      bank_account_id?: string;
+      financial_period_id?: string;
+      transaction_type?: string;
+      date_from?: string;
+      date_to?: string;
+      page?: number;
+      page_size?: number;
+    }) => apiFetch<Paginated<BankTransaction>>("/bank-transactions", { query }),
+    create: (body: {
+      bank_account_id: string;
+      financial_period_id: string;
+      transaction_type: Exclude<BankTransactionType, "TRANSFER_IN" | "TRANSFER_OUT">;
+      amount: string;
+      currency: string;
+      transaction_date: string;
+      description?: string | null;
+    }) => apiFetch<BankTransaction>("/bank-transactions", { method: "POST", body }),
+    transfer: (body: {
+      source_bank_account_id: string;
+      destination_bank_account_id: string;
+      financial_period_id: string;
+      amount: string;
+      currency: string;
+      transaction_date: string;
+      description?: string | null;
+    }) => apiFetch<BankTransferResult>("/bank-transactions/transfer", { method: "POST", body }),
+    get: (id: string) => apiFetch<BankTransaction>(`/bank-transactions/${id}`),
   },
   // Read-only, server-computed per-period breakdown (Phase 5 part 3) — distinct from
   // `distributionRules` below (CRUD rule definitions). See the `DistributionView`

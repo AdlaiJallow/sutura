@@ -116,18 +116,107 @@ export interface SavingsSummary {
   last_calculated_at: ISODateTime | null;
 }
 
-// GET /bank-accounts, GET /bank-accounts/{id} — BankAccountRead.
+// GET /bank-accounts, GET /bank-accounts/{id} — BankAccountRead. `account_type` is a DB
+// CHECK-constrained enum server-side (confirmed live: an out-of-set value 500s instead of a
+// clean 422 — see Phase 5 part 4 handback notes) so the frontend only ever sends one of these
+// six values via a `select` field, never free text.
+export type BankAccountType = "BANK" | "MOBILE_MONEY" | "CASH" | "SAVINGS" | "INVESTMENT" | "OTHER";
+
 export interface BankAccountSummary {
   id: string;
   account_name: string;
   institution_name: string | null;
-  account_type: string | null;
+  account_type: BankAccountType | string | null;
   /** Null when no identifier was ever recorded — never the full number (D-034/D-015 masking). */
   account_identifier_last4: string | null;
   currency: string;
   opening_balance: Money;
   current_balance: Money;
   is_active: boolean;
+  notes: string | null;
+  updated_at: ISODateTime;
+}
+
+// GET/POST /bank-transactions, GET /bank-transactions/{id} — BankTransactionRead. An
+// append-only ledger row — no PATCH/DELETE exists on the backend (confirmed live), so no
+// edit/delete UI is ever built for one of these. TRANSFER_IN/TRANSFER_OUT are only ever
+// produced by `POST /bank-transactions/transfer`, never created directly.
+export type BankTransactionType = "DEPOSIT" | "WITHDRAWAL" | "ADJUSTMENT" | "TRANSFER_IN" | "TRANSFER_OUT";
+
+export interface BankTransaction {
+  id: string;
+  bank_account_id: string;
+  financial_period_id: string;
+  transaction_type: BankTransactionType | string;
+  amount: Money;
+  currency: string;
+  transaction_date: ISODate;
+  description: string | null;
+  related_record_type: string | null;
+  related_record_id: string | null;
+  /** Set on both legs of a transfer, sharing one value — null for a plain deposit/withdrawal/adjustment. */
+  transfer_pair_id: string | null;
+}
+
+// POST /bank-transactions/transfer — BankTransferRead. Distinct from a single
+// `BankTransaction`: it's the paired result of moving money between two of the user's own
+// accounts in one atomic operation.
+export interface BankTransferResult {
+  transfer_pair_id: string;
+  source_transaction: BankTransaction;
+  destination_transaction: BankTransaction;
+}
+
+// GET/POST/PATCH /savings-items — SavingsItemRead. Manual, period-scoped savings entries
+// (distinct from `SavingsAllocation` below, which is where saved money is *sent*, not how
+// much was saved).
+export interface SavingsItem {
+  id: string;
+  financial_period_id: string;
+  name: string;
+  amount: Money;
+  currency: string;
+  date: ISODate;
+  /** Free-text label for where this manual saving is going — not a bank account link. */
+  destination: string | null;
+  notes: string | null;
+  updated_at: ISODateTime;
+}
+
+// GET/POST/PATCH /savings-distribution-rules, PUT .../items — SavingsDistributionRuleRead.
+// Structurally parallel to `DistributionRule` (name + a nested, sum-to-100 item list) but each
+// item points at a real bank account OR a free-text destination label — exactly one of the two
+// (`_require_destination` server-side), never both, never neither.
+export interface SavingsDistributionRuleItem {
+  id: string;
+  bank_account_id: string | null;
+  destination_label: string | null;
+  percentage: Percentage;
+}
+
+export interface SavingsDistributionRule {
+  id: string;
+  name: string;
+  is_active: boolean;
+  is_default: boolean;
+  items: SavingsDistributionRuleItem[];
+  updated_at: ISODateTime;
+}
+
+// GET/POST /savings-allocations, POST .../apply-rule — SavingsAllocationRead. Where saved
+// money is actually sent. `allocation_method` AUTO rows come only from apply-rule (which
+// regenerates the whole AUTO set and never stacks) and can't be deleted individually — the
+// backend rejects that with a 422, surfaced as-is rather than a delete button that's built to fail.
+export type SavingsAllocationMethod = "AUTO" | "MANUAL";
+
+export interface SavingsAllocation {
+  id: string;
+  savings_id: string;
+  bank_account_id: string | null;
+  destination_label: string | null;
+  amount: Money;
+  allocation_method: SavingsAllocationMethod | string;
+  bank_transaction_id: string | null;
   updated_at: ISODateTime;
 }
 
