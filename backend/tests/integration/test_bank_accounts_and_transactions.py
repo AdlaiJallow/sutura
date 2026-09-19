@@ -47,6 +47,22 @@ def test_create_masks_identifier_and_get_roundtrips(client: TestClient, auth_hea
     assert Decimal(str(account["current_balance"])) == Decimal("0.0000")
 
 
+def test_create_rejects_invalid_account_type_with_clean_422(
+    client: TestClient, auth_headers: dict
+):
+    """Found during Phase 5 frontend verification: `account_type` had no Pydantic-level
+    validation, only the DB CHECK constraint — an invalid value raised a raw IntegrityError/500
+    instead of the app's error envelope. Fixed to mirror the income_type/expense_category/
+    payment_method pattern; this is the regression test."""
+    resp = client.post(
+        "/api/v1/bank-accounts",
+        json={"account_name": "Bad Type Account", "account_type": "BOGUS_TYPE"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_update_bank_account_happy_path_optimistic_lock_and_reactivation(
     client: TestClient, auth_headers: dict
 ):

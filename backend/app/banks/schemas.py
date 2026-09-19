@@ -2,7 +2,18 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Mirrors the DB CHECK constraint on `bank_accounts.account_type` exactly (app/banks/models.py)
+# — validated here too so an invalid value is a clean 422, not a raw IntegrityError/500 (same
+# fix already applied to income_type/expense_category/payment_method).
+ACCOUNT_TYPES = {"BANK", "MOBILE_MONEY", "CASH", "SAVINGS", "INVESTMENT", "OTHER"}
+
+
+def _valid_account_type(value: str | None) -> str | None:
+    if value is not None and value not in ACCOUNT_TYPES:
+        raise ValueError(f"account_type must be one of {sorted(ACCOUNT_TYPES)}.")
+    return value
 
 
 class BankAccountCreate(BaseModel):
@@ -12,6 +23,8 @@ class BankAccountCreate(BaseModel):
     account_identifier: str | None = Field(default=None, description="Raw identifier, encrypted server-side, never echoed back in full")
     currency: str = Field(default="GMD", min_length=3, max_length=3)
     opening_balance: Decimal = Field(default=Decimal("0"), ge=0)
+
+    _validate_account_type = field_validator("account_type")(_valid_account_type)
 
 
 class BankAccountUpdate(BaseModel):
@@ -30,6 +43,8 @@ class BankAccountUpdate(BaseModel):
     notes: str | None = None
     is_active: bool | None = None
     expected_updated_at: datetime
+
+    _validate_account_type = field_validator("account_type")(_valid_account_type)
 
 
 class BankAccountRead(BaseModel):
