@@ -43,7 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <PeriodProvider>
       <div className="flex min-h-full flex-col">
-        <header className="border-b border-line bg-paper-raised">
+        <header className="border-b border-line bg-paper-raised print:hidden">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
             <Link href="/dashboard" className="flex items-baseline gap-2">
               <Logo size="lg" />
@@ -76,7 +76,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <WorkflowNav />
           </div>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">{children}</main>
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 print:max-w-none print:p-0">
+          {children}
+        </main>
       </div>
     </PeriodProvider>
   );

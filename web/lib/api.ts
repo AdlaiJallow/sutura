@@ -197,6 +197,24 @@ export const api = {
   },
   users: {
     me: () => apiFetch<UserProfile>("/users/me"),
+    /** Partial update — either field may be omitted. No `expected_updated_at`
+     * on this endpoint (confirmed live: a bare `{full_name}` or `{default_currency}`
+     * PATCH with no lock field succeeds), unlike the money-affecting resources. */
+    update: (body: { full_name?: string; default_currency?: string }) =>
+      apiFetch<UserProfile>("/users/me", { method: "PATCH", body }),
+    /** 204 on success. A wrong `current_password` is a 401 UNAUTHORIZED with no
+     * `field_errors` (confirmed live) — the caller shows it as a plain-language
+     * error next to the current-password field, not a generic banner. */
+    changePassword: (body: { current_password: string; new_password: string }) =>
+      apiFetch<void>("/users/me/change-password", { method: "POST", body }),
+    /** Deactivates the account (never a hard delete — spec-consistent with
+     * bank account "deactivate"). Confirmed live: the backend requires the
+     * user's current password in the body to confirm identity, even though
+     * they're already authenticated — a wrong one is a 401 UNAUTHORIZED, same
+     * shape as `changePassword`. This does not, by itself, revoke the current
+     * session — callers must still call `auth.logout()` afterward. */
+    deleteMe: (body: { password: string }) =>
+      apiFetch<void>("/users/me", { method: "DELETE", body }),
   },
   financialPeriods: {
     list: (query?: { year?: number; status?: string; page?: number; page_size?: number }) =>
@@ -532,5 +550,16 @@ export const api = {
       },
     ) => apiFetch<IncomeRecord>(`/income/${id}`, { method: "PATCH", body }),
     remove: (id: string) => apiFetch<void>(`/income/${id}`, { method: "DELETE" }),
+  },
+  // Reports module (Phase 5 part 5) — deliberately thin (spec: reports/exports are mostly
+  // Phase 6 work). `monthlySummary` returns the exact same `MonthlySummaryRead` shape as
+  // `financialPeriods.summary` (confirmed live, byte-for-byte field set) but is the actual
+  // "report" endpoint, so the Reports page calls this one rather than reusing the dashboard's
+  // call. Every other report type 501s by deliberate backend design — this file intentionally
+  // has no wrapper for them; the Reports page lists those as "coming soon" instead of calling
+  // an endpoint built to fail.
+  reports: {
+    monthlySummary: (periodId: string) =>
+      apiFetch<MonthlySummary>(`/reports/monthly-summary/${periodId}`),
   },
 };

@@ -17,6 +17,10 @@ interface AuthContextValue {
    * very next page. */
   login: (accessToken: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-fetches `GET /users/me` so a profile edit on the Settings page (name,
+   * currency) is reflected immediately wherever `user` is read — e.g. the
+   * header's initials chip — without waiting for a full reload. */
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -92,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ status, user, login, logout }}>
+    <AuthContext.Provider value={{ status, user, login, logout, refreshUser: loadUser }}>
       {children}
     </AuthContext.Provider>
   );
